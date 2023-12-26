@@ -146,3 +146,4 @@ cython_debug/
 
 *.pck
 **/casambi-bt-store
+/.idea/
