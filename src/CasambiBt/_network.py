@@ -3,12 +3,12 @@ import logging
 import pickle
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Optional, cast
+from typing import Optional, cast
 
 import httpx
 from httpx import AsyncClient, RequestError
 
-from ._cache import Cache
+from ._cache import getCacheDir
 from ._constants import DEVICE_NAME
 from ._keystore import KeyStore
 from ._unit import Group, Scene, Unit, UnitControl, UnitControlType, UnitType
@@ -18,9 +18,6 @@ from .errors import (
     NetworkOnlineUpdateNeededError,
     NetworkUpdateError,
 )
-
-SESSION_CACHE_FILE: Final = "session.pck"
-TYPES_CACHE_FILE: Final = "types.pck"
 
 
 @dataclass()
@@ -38,7 +35,7 @@ class _NetworkSession:
 
 
 class Network:
-    def __init__(self, uuid: str, httpClient: AsyncClient, cache: Cache) -> None:
+    def __init__(self, uuid: str, httpClient: AsyncClient) -> None:
         self._session: Optional[_NetworkSession] = None
 
         self._networkName: Optional[str] = None
@@ -49,87 +46,100 @@ class Network:
         self.groups: list[Group] = []
         self.scenes: list[Scene] = []
 
+        self._networkType = "Classic" # or "Evolution" # test EBR
         self._logger = logging.getLogger(__name__)
         # TODO: Create LoggingAdapter to prepend uuid.
 
         self._id: Optional[str] = None
         self._uuid = uuid
+        self._logger.info(f"UUID = {self._uuid}")
         self._httpClient = httpClient
 
-        self._cache = cache
-        self._keystore = KeyStore(self._cache)
+        self._cachePath = getCacheDir(uuid)
+        self._keystore = KeyStore(self._cachePath)
 
-        self._loadSession()
-        self._loadTypeCache()
+        self._sessionPath = self._cachePath / "session.pck"
+        if self._sessionPath.exists():
+            self._loadSession()
+
+        self._typeCachePath = self._cachePath / "types.pck"
+        if self._typeCachePath.exists():
+            self._loadTypeCache()
 
     def _loadSession(self) -> None:
-        self._logger.debug("Loading session...")
-        with self._cache as cachePath:
-            if (cachePath / SESSION_CACHE_FILE).exists():
-                self._session = pickle.load((cachePath / SESSION_CACHE_FILE).open("rb"))
-                self._logger.info("Session loaded.")
+        self._logger.info("Loading session...")
+        self._session = pickle.load(self._sessionPath.open("rb"))
 
-    def _saveSesion(self) -> None:
-        self._logger.debug("Saving session...")
-        with self._cache as cachePath:
-            pickle.dump(self._session, (cachePath / SESSION_CACHE_FILE).open("wb"))
+    def _saveSession(self) -> None:
+        self._logger.info("Saving session...")
+        pickle.dump(self._session, self._sessionPath.open("wb"))
 
     def _loadTypeCache(self) -> None:
-        self._logger.debug("Loading unit type cache...")
-        with self._cache as cachePath:
-            if (cachePath / TYPES_CACHE_FILE).exists():
-                self._unitTypes = pickle.load((cachePath / TYPES_CACHE_FILE).open("rb"))
-                self._logger.info("Unit type cache loaded.")
+        self._logger.info("Loading unit type cache...")
+        self._unitTypes = pickle.load(self._typeCachePath.open("rb"))
 
     def _saveTypeCache(self) -> None:
-        self._logger.debug("Saving type cache...")
-        with self._cache as cachePath:
-            pickle.dump(self._unitTypes, (cachePath / TYPES_CACHE_FILE).open("wb"))
+        self._logger.info("Saving type cache...")
+        pickle.dump(self._unitTypes, self._typeCachePath.open("wb"))
 
     async def getNetworkId(self, forceOffline: bool = False) -> None:
-        self._logger.info("Getting network id...")
+        """ Fetch network id from casambi.com
 
-        with self._cache as cachePath:
-            networkCacheFile = cachePath / "networkid"
+        :param forceOffline: Whether to skip online query e.g. for Classic network type
+        :raises RequestError: request failed
+        :raises NetworkOnlineUpdateNeededError: no network id found, either in cache or from casambi.com
+        """
+        self._logger.info(f"Getting network id for uuid {self._uuid}...")
 
-            if networkCacheFile.exists():
-                self._id = networkCacheFile.read_text()
+        networkCacheFile = self._cachePath / "networkid"
+        res = None
+        
+        if networkCacheFile.exists():
+            self._id = networkCacheFile.read_text()
 
         if forceOffline:
+            self._logger.info("forcedOffline network line 101")
             if not self._id:
                 raise NetworkOnlineUpdateNeededError("Network isn't cached.")
-            else:
-                return
 
-        getNetworkIdUrl = f"https://api.casambi.com/network/uuid/{self._uuid}"
-        try:
-            res = await self._httpClient.get(getNetworkIdUrl)
-        except RequestError as err:
-            if not self._id:
-                raise NetworkOnlineUpdateNeededError from err
-            else:
-                self._logger.warning(
-                    "Network error while fetching network id. Continuing with cache.",
-                    exc_info=True,
-                )
-                return
+            # Classic Casambi cannot connect to cloud, so must skip? TODO
+        else :
+            getNetworkIdUrl = f"https://api.casambi.com/network/uuid/{self._uuid}"
+            self._logger.debug(f"Fetching {getNetworkIdUrl}")
+            try:
+                res = await self._httpClient.get(getNetworkIdUrl)
+            except RequestError as err:
+                if not self._id:
+                    raise NetworkOnlineUpdateNeededError from err
+                else:
+                    self._logger.warning(
+                        "Network error while fetching network id. Continuing with cache.",
+                        exc_info = True,
+                    )
+                    #return
 
-        if res.status_code == httpx.codes.NOT_FOUND:
+        self._logger.info(f"NetworkId = {self._id} Result from api: {res}")
+
+        if not self._id:
+            self._id = "BkofKL0JMXLEDUr4V1znQkGK5cqXgKNc" # EBR manually fetched from api.casambi.com
+
+        self._logger.info(f"NetworkId = {self._id} Result from api: {res}")
+        
+        if res.status_code == httpx.codes.NOT_FOUND: # << Classic network/no Casambi API key: alternative login? TODO EBR
             raise NetworkNotFoundError(
                 "API failed to find network. Is your network configured correctly?"
             )
         if res.status_code != httpx.codes.OK:
             raise NetworkNotFoundError(
-                f"Getting network id returned unexpected status {res.status_code}"
+                f"Getting network id from api.casambi.com returned unexpected status {res.status_code}"
             )
 
-        new_id = cast(str, res.json()["id"])
-        if self._id != new_id:
-            self._logger.info(f"Network id changed from {self._id} to {new_id}.")
-            with self._cache as cachePath:
-                networkCacheFile = cachePath / "networkid"
+        if not forceOffline: # Classic?
+            new_id = cast(str, res.json()["id"])
+            if self._id != new_id:
+                self._logger.info(f"Network id changed from {self._id} to {new_id}.")
                 networkCacheFile.write_text(new_id)
-            self._id = new_id
+                self._id = new_id
         self._logger.info(f"Got network id {self._id}.")
 
     def authenticated(self) -> bool:
@@ -141,17 +151,20 @@ class Network:
         return self._keystore
 
     async def logIn(self, password: str, forceOffline: bool = False) -> None:
+        """ Login on api.casambi.com to fetch configurations; returned info was previously stored by client app during hardware setup
+
+        """
         await self.getNetworkId(forceOffline)
 
         # No need to be authenticated if we try to be offline anyway.
         if self.authenticated() or forceOffline:
             return
 
-        self._logger.info("Logging in to network...")
+        self._logger.info("Logging in to api.casambi.com ...")
         getSessionUrl = f"https://api.casambi.com/network/{self._id}/session"
 
         res = await self._httpClient.post(
-            getSessionUrl, json={"password": password, "deviceName": DEVICE_NAME}
+            getSessionUrl, json={"password": password, "deviceName": DEVICE_NAME} # DEVICE_NAME is a placeholder name
         )
         if res.status_code == httpx.codes.OK:
             # Parse session
@@ -159,9 +172,9 @@ class Network:
             sessionJson["expires"] = datetime.utcfromtimestamp(
                 sessionJson["expires"] / 1000
             )
-            self._session = _NetworkSession(**sessionJson)
-            self._logger.info("Login sucessful.")
-            self._saveSesion()
+            self._session = _NetworkSession(**sessionJson) # stores session info returned from api.casambi.com for later use
+            self._logger.info("Login successful.")
+            self._saveSession()
         else:
             raise AuthenticationError(f"Login failed: {res.status_code}\n{res.text}")
 
@@ -174,23 +187,22 @@ class Network:
 
         # TODO: Save and send revision to receive actual updates?
 
-        with self._cache as cachePath:
-            cachedNetworkPah = cachePath / f"{self._id}.json"
-            if cachedNetworkPah.exists():
-                network = json.loads(cachedNetworkPah.read_bytes())
-                self._networkRevision = network["network"]["revision"]
-                self._logger.info(
-                    f"Loaded cached network. Revision: {self._networkRevision}"
-                )
-            else:
-                if forceOffline:
-                    raise NetworkOnlineUpdateNeededError("Network isn't cached.")
-                self._networkRevision = 0
+        cachedNetworkPath = self._cachePath / f"{self._id}.json"
+        if cachedNetworkPath.exists():
+            network = json.loads(cachedNetworkPath.read_bytes())
+            self._networkRevision = network["network"]["revision"]
+            self._logger.info(
+                f"Loaded cached network. Revision: {self._networkRevision}"
+            )
+        else:
+            #raise NetworkOnlineUpdateNeededError("Network isn't cached.")
+            self._networkRevision = 0
 
         if not forceOffline:
             getNetworkUrl = f"https://api.casambi.com/network/{self._id}/"
 
             try:
+                self._logger.debug("Fetch devices")
                 # **SECURITY**: Do not set session header for client! This could leak the session with external clients.
                 res = await self._httpClient.put(
                     getNetworkUrl,
@@ -202,15 +214,6 @@ class Network:
                     headers={"X-Casambi-Session": self._session.session},  # type: ignore[union-attr]
                 )
 
-                # Apparently this happens when the password changes.
-                # In this case we should at least invalidate the session.
-                # Currently we invalidate the whole cache for the network since recreating it doesn't cost much.
-                if res.status_code == httpx.codes.GONE:
-                    self._logger.error(
-                        "API reports that network is gone. Deleting cache. Retry later."
-                    )
-                    self._cache.invalidateCache()
-
                 if res.status_code != httpx.codes.OK:
                     self._logger.error(f"Update failed: {res.status_code}\n{res.text}")
                     raise NetworkUpdateError("Could not update network!")
@@ -220,9 +223,7 @@ class Network:
                 updateResult = res.json()
                 if updateResult["status"] != "UPTODATE":
                     self._networkRevision = updateResult["network"]["revision"]
-                    with self._cache as cachePath:
-                        cachedNetworkPah = cachePath / f"{self._id}.json"
-                        cachedNetworkPah.write_bytes(res.content)
+                    cachedNetworkPath.write_bytes(res.content)
                     network = updateResult
                     self._logger.info(
                         f"Fetched updated network with revision {self._networkRevision}"
@@ -234,33 +235,76 @@ class Network:
                     "Failed to update network. Continuing offline.", exc_info=True
                 )
 
-        # Prase general information
-        self._networkName = network["network"]["name"]
+        # Parse general information
+        #if forceOffline:
+        #    self._networkName = "Mein Netzwerk" # EBR make a var to set on top
+        #else :
 
-        # Parse keys if there are any. Otherwise the network is probably a classic network.
+        # Parse keys if there are any. Otherwise the network is probably a Classic network.
         if "keyStore" in network["network"]:
+            self._logger.debug("parsing keys")
             keys = network["network"]["keyStore"]["keys"]
             for k in keys:
                 self._keystore.addKey(k)
 
-        # TODO: Parse managerKey and visitorKey for classic networks.
+        self._networkName = network["network"]["name"]
+            
+        # TODO: Parse managerKey and visitorKey for Classic networks.
+        
+        # manually add Classic keys. Also without Casambi API access key?
+        if (self._keystore.size() == 0) :
+            self._logger.debug("Empty keystore, Classic?") # EBR
+            _key1 = {
+                  "id": 0,
+                  "type": 1,
+                  "role": 3,
+                  "name": "managerKey",
+                  "key": "547269616e67656c31"
+            }
+            self._keystore.addKey(_key1)
 
         # Parse units
         self.units = []
-        units = network["network"]["units"]
-        for u in units:
-            uType = await self._fetchUnitInfo(u["type"])
-            uObj = Unit(
-                u["type"],
-                u["deviceID"],
-                u["uuid"],
-                u["address"],
-                u["name"],
-                str(u["firmware"]),
+        if (self._networkType == "Classic") : # EBR
+            # manually add 2 "Sento" units EBR TODO Occhio Sento unit type = 816
+            _unitTypeId = "816"
+            uType = await self._fetchUnitInfo(_unitTypeId) # fetch from api.casambi.com
+            unit1 = Unit(
+                _unitTypeId,
+                "3",
+                "D28C90BC-0330051A-1800C58B-144BCCD7",
+                "81b4d28c90bc",
+                "Sento beneden",
+                "Classic/26.24",
                 uType,
             )
-            self.units.append(uObj)
-
+            self.units.append(unit1)
+            # TODO could get name from BLE reply
+            unit2 = Unit(
+                _unitTypeId,
+                "2",
+                "07003333-0330051C-0A00C58B-144BCCD7",
+                "cadf07003333",
+                "Sento boven",
+                "Classic/26.24",
+                uType,
+            )
+            self.units.append(unit2)
+        else:
+            units = network["network"]["units"]
+            for u in units:
+                uType = await self._fetchUnitInfo(u["type"]) # from api.casambi.com
+                uObj = Unit(
+                    u["type"],
+                    u["deviceID"],
+                    u["uuid"],
+                    u["address"],
+                    u["name"],
+                    str(u["firmware"]),
+                    uType,
+                )
+                self.units.append(uObj)
+        
         # Parse cells
         self.groups = []
         cells = network["network"]["grid"]["cells"]
@@ -282,7 +326,7 @@ class Network:
                 )
                 if len(unitMatch) != 1:
                     self._logger.warning(
-                        f"Incositent unit reference to {subC['unit']} in group {c['groupID']}. Got {len(unitMatch)} matches."
+                        f"Incosistent unit reference to {subC['unit']} in group {c['groupID']}. Got {len(unitMatch)} matches."
                     )
                     continue
                 group_units.append(unitMatch[0])
@@ -292,10 +336,11 @@ class Network:
 
         # Parse scenes
         self.scenes = []
-        scenes = network["network"]["scenes"]
-        for s in scenes:
-            sObj = Scene(s["sceneID"], s["name"])
-            self.scenes.append(sObj)
+        if (self._networkType != "Classic") :
+            scenes = network["network"]["scenes"]
+            for s in scenes:
+                sObj = Scene(s["sceneID"], s["name"])
+                self.scenes.append(sObj)
 
         # TODO: Parse more stuff
 
@@ -358,7 +403,7 @@ class Network:
         # Chache unit type
         self._unitTypes[unitTypeObj.id] = unitTypeObj
 
-        self._logger.info("Sucessfully fetched unit type.")
+        self._logger.info("Successfully fetched unit type.")
         return unitTypeObj
 
     async def disconnect(self) -> None:

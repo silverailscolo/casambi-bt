@@ -31,8 +31,8 @@ class UnitControlType(Enum):
     VERTICAL = 5
     """The vertical value of the light can be adjusted."""
 
-    UNKNOWN = 99
-    """State isn't implemented. Control saved for debugging purposes."""
+    UNKOWN = 99
+    """State isn't implemented. Control saved for debuggin purposes."""
 
 
 @dataclass(frozen=True, repr=True)
@@ -43,8 +43,8 @@ class UnitControl:
     default: int
     readonly: bool
 
-    _min: Optional[int] = None
-    _max: Optional[int] = None
+    min: Optional[int] = None
+    max: Optional[int] = None
 
 
 @dataclass(frozen=True, repr=True)
@@ -88,9 +88,9 @@ class UnitState:
         self._temperature: Optional[int] = None
         self._vertical: Optional[int] = None
 
-    def _check_range(self, value: int, _min: int, _max: int) -> None:
-        if value < _min or value > _max:
-            raise ValueError(f"{value} is not between {_min} and {_max}")
+    def _check_range(self, value: int, min: int, max: int) -> None:
+        if value < min or value > max:
+            raise ValueError(f"{value} is not between {min} and {max}")
 
     DIMMER_RESOLUTION: Final = 8
     DIMMER_MIN: Final = 0
@@ -164,7 +164,7 @@ class UnitState:
 
     @hs.setter
     def hs(self, value: tuple[float, float]) -> None:
-        """Convert HS color to internal RBG representation where H is a float in [0..1[ and S a float in [0..1]."""
+        """Convert HS color to interal RBG representation where H is a float in [0..1[ and S a float in [0..1]."""
         h, s = value
 
         rgb = hsv_to_rgb(h, s, 1)
@@ -256,7 +256,7 @@ class Unit:
         Unsupported state information will be ignored.
         """
 
-        # offset, length, value
+        # offset, lenth, value
         values: list[tuple[int, int, int]] = []
 
         # TODO: Support for resolutions >8 byte?
@@ -295,10 +295,10 @@ class Unit:
                 scale = UnitState.WHITE_RESOLUTION - c.length
                 scaledValue = state.white >> scale
             elif (
-                    c.type == UnitControlType.TEMPERATURE
-                    and state.temperature is not None
-                    and c._min
-                    and c._max
+                c.type == UnitControlType.TEMPERATURE
+                and state.temperature is not None
+                and c.min
+                and c.max
             ):
                 clampedTemp = min(c.max, max(c.min, state.temperature))
                 tempMask = 2**c.length - 1
@@ -312,9 +312,9 @@ class Unit:
 
         # Pack state into bytes
         res = bytearray(self.unitType.stateLength)
-        for off, _len, val in values:
+        for off, len, val in values:
             val <<= off % 8
-            byteLen = (_len + off % 8 - 1) // 8 + 1
+            byteLen = (len + off % 8 - 1) // 8 + 1
             valBytes = val.to_bytes(byteLen, byteorder="little", signed=False)
             for i in range(byteLen):
                 res[off // 8] |= valBytes[i]
@@ -377,17 +377,17 @@ class Unit:
                 scale = UnitState.WHITE_RESOLUTION - c.length
                 self._state.white = cInt << scale
             elif c.type == UnitControlType.TEMPERATURE:
-                if not c._max or not c._min:
+                if not c.max or not c.min:
                     _LOGGER.warning("Can't set temperature when min or max unknown.")
                     continue
-                tempRange = c._max - c._min
+                tempRange = c.max - c.min
                 tempMask = 2**c.length - 1
-                # TODO: We should probably try to make this number a bit more round
-                self._state.temperature = int(((cInt / tempMask) * tempRange) + c._min)
-            elif c.type == UnitControlType.UNKNOWN:
+                # TODO: We should probalby try to make this number a bit more round
+                self._state.temperature = int(((cInt / tempMask) * tempRange) + c.min)
+            elif c.type == UnitControlType.UNKOWN:
                 # Might be useful for implementing more state types
                 _LOGGER.debug(
-                    f"Value for unknown control type at {c.offset}: {cInt}. Unit type is {self.unitType.id}."
+                    f"Value for unkown control type at {c.offset}: {cInt}. Unit type is {self.unitType.id}."
                 )
 
         _LOGGER.debug(f"Parsed {b2a(value)} to {self.state.__repr__()}")
@@ -414,7 +414,7 @@ class Group:
     :ivar units: A list of units in this group.
     """
 
-    groupId: int
+    groudId: int
     name: str
 
     units: list[Unit]

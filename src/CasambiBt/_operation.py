@@ -32,3 +32,21 @@ class OperationsContext:
         self.origin += 1
 
         return packet + payload
+
+    def prepareOperationClassic(self, op: OpCode, target: int, payload: bytes) -> bytes: # EBR shorter 
+        if len(payload) > 13:
+            raise ValueError("Payload too long")
+        # turn off: 0x00 invoegen voor laatste paar
+        # turn on = lamp + helderheid
+
+        flags = (self.lifetime & 15) << 11 | len(payload)
+        # & = AND bitwise, | = OR bitwise, << = shiftleft
+
+        # Ensure that origin can't overflow.
+        # TODO: Check that unsigned is actually correct here.
+        packet = struct.pack(
+            ">HBHHH", flags, op, self.origin & (2**16 - 1), target, 0
+        ) # H = unsigned short, B = unsigned char
+        self.origin += 1
+
+        return packet + payload

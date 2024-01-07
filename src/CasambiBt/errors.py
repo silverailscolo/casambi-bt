@@ -30,7 +30,7 @@ class NetworkOnlineUpdateNeededError(NetworkUpdateError):
 
 
 class AuthenticationError(CasambiBtError):
-    """Excpetion that is raised when authentication to the network fails."""
+    """Exception that is raised when authentication to the network fails."""
 
     pass
 

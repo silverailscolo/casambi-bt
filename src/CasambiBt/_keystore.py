@@ -2,9 +2,8 @@ import binascii
 import logging
 import pickle
 from dataclasses import dataclass
-from typing import Final, Optional
-
-from ._cache import Cache
+from pathlib import Path
+from typing import Optional
 
 
 @dataclass()
@@ -16,36 +15,28 @@ class Key:
     key: bytes
 
 
-KEY_CACHE_FILE: Final = "keys.pck"
-
-
 class KeyStore:
-    def __init__(self, cache: Cache) -> None:
+    def __init__(self, cacheDir: Path) -> None:
         self._keys: list[Key] = []
         self._logger = logging.getLogger(__name__)
 
-        self._cache = cache
-        self._load()
+        self._storePath = cacheDir / "keys.pck"
+        if self._storePath.exists():
+            self._load()
 
     def _load(self) -> None:
         self._logger.info("Loading keys...")
-        with self._cache as cachePath:
-            if not (cachePath / KEY_CACHE_FILE).exists():
-                self._logger.debug("No cached keys.")
-                return
-            self._keys = pickle.load((cachePath / KEY_CACHE_FILE).open("rb"))
-            self._logger.debug(f"Loaded {len(self._keys)} keys.")
+        self._keys = pickle.load(self._storePath.open("rb"))
+        self._logger.info(f"Loaded {len(self._keys)} keys.")
 
     def _save(self) -> None:
         self._logger.info("Saving keys...")
-        with self._cache as cachePath:
-            pickle.dump(self._keys, ((cachePath / KEY_CACHE_FILE).open("wb")))
-            self._logger.debug(f"Saved {len(self._keys)} keys.")
+        pickle.dump(self._keys, (self._storePath.open("wb")))
 
-    def addKey(self, dict: dict) -> None:
-        if "id" not in dict:
+    def addKey(self, _dict: dict) -> None:
+        if "id" not in _dict:
             raise KeyError("id")
-        id = int(dict["id"])
+        id = int(_dict["id"])
         if id < 0:
             raise ValueError("id")
 
@@ -53,26 +44,27 @@ class KeyStore:
             self._logger.info(f"Key with id {id} already exists. Skipping...")
             return
 
-        if "type" not in dict:
+        if "type" not in _dict:
             raise KeyError("type")
-        type = int(dict["type"])
+        type = int(_dict["type"])
         if type < 0 or type > 0xFF:
             raise ValueError("type")
 
-        if "role" not in dict:
+        if "role" not in _dict:
             raise KeyError("role")
-        role = int(dict["role"])
+        role = int(_dict["role"])
         if role < 0 or role > 3:
             raise ValueError("role")
 
-        if "name" not in dict:
+        if "name" not in _dict:
             raise KeyError("name")
-        name = dict["name"]
+        name = _dict["name"]
 
-        if "key" not in dict:
+        if "key" not in _dict:
             raise KeyError("key")
         try:
-            key = binascii.a2b_hex(dict["key"])
+            key = binascii.a2b_hex(_dict["key"])
+            # get binary representation of hexadecimal string _dict["key"]
         except binascii.Error:
             raise ValueError("key")
 
@@ -87,6 +79,9 @@ class KeyStore:
         if save:
             self._save()
 
+    def size(self) -> int:
+        return len(self._keys)
+    
     def getKey(self) -> Optional[Key]:
         key: Optional[Key] = None
         for k in self._keys:

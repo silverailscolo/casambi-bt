@@ -2,13 +2,11 @@ import asyncio
 import logging
 from binascii import b2a_hex as b2a
 from itertools import pairwise  # type: ignore[attr-defined]
-from pathlib import Path
 from typing import Any, Callable, Optional, Union, cast
 
 from bleak.backends.device import BLEDevice
 from httpx import AsyncClient, RequestError
 
-from ._cache import Cache
 from ._client import CasambiClient, ConnectionState, IncomingPacketType
 from ._network import Network
 from ._operation import OpCode, OperationsContext
@@ -23,21 +21,17 @@ class Casambi:
     e.g. ``Network`` or ``CasambiClient``, directly.
     """
 
-    def __init__(
-        self, httpClient: Optional[AsyncClient] = None, cachePath: Optional[Path] = None
-    ) -> None:
+    def __init__(self, httpClient: Optional[AsyncClient] = None) -> None:
         self._casaClient: Optional[CasambiClient] = None
         self._casaNetwork: Optional[Network] = None
 
         self._unitChangedCallbacks: list[Callable[[Unit], None]] = []
-        self._disconnectCallbacks: list[Callable[[], None]] = []
 
         self._logger = logging.getLogger(__name__)
         self._opContext = OperationsContext()
         self._ownHttpClient = httpClient is None
         self._httpClient = httpClient
-
-        self._cache = Cache(cachePath)
+        self._networkType = "Classic" # or "Evolution" if it is a 5.0 BLE network # test EBR
 
     def _checkNetwork(self) -> None:
         if not self._casaNetwork or not self._casaNetwork._networkRevision:
@@ -102,9 +96,9 @@ class Casambi:
     ) -> None:
         """Connect and authenticate to a network.
 
-        :param addr_or_device: The MAC address of the network or a BLEDevice. Use `discover` to find the address of a network.
-        :param password: The password for the network.
-        :param forceOffline: Whether to avoid contacting the casambi servers.
+        :param addr: The MAC address of the network or a BLEDevice. Use `discover` to find the address of a network.
+        :param password: The password for the bluetooth network, also used to log in to api.casambi.com
+        :param forceOffline: Whether to avoid contacting the api.casambi.com servers.
         :raises AuthenticationError: The supplied password is invalid.
         :raises ProtocolError: The network did not follow the expected protocol.
         :raises NetworkNotFoundError: No network was found under the supplied address.
@@ -112,18 +106,21 @@ class Casambi:
         :raises BluetoothError: An error occurred in the bluetooth stack.
         """
 
+        #forceOffline = True # test for Classic
+        
         if isinstance(addr_or_device, BLEDevice):
             addr = addr_or_device.address
         else:
             # Add colons if necessary.
             if ":" not in addr_or_device:
-                addr_or_device = ":".join(["".join(p) for p in pairwise(addr_or_device)][::2])
+                addr_or_device = ":".join(["".join(p) for p in pairwise(addr)][::2])
+                # EBR changed, was: pairwise(addr) but that's empty here
             addr = addr_or_device
 
-        self._logger.info(f"Trying to connect to casambi network {addr}...")
+        self._logger.info(f"Trying to connect to Casambi network {addr}...")
 
         self._casaClient = CasambiClient(
-            addr_or_device, self._dataCallback, self._disconnectCallback
+            addr_or_device, self._dataCallback, self._disconnect_callback
         )
 
         if not self._httpClient:
@@ -131,15 +128,19 @@ class Casambi:
 
         # Retrieve network information
         uuid = addr.replace(":", "").lower()
-        self._cache.setUuid(uuid)
-        self._casaNetwork = Network(uuid, self._httpClient, self._cache)
+
+        # hack uuid EBR
+        uuid = "c58b144bccd7"
+        self._logger.debug(f"uuid={uuid}")
+        
+        self._casaNetwork = Network(uuid, self._httpClient) # create new Network instance from uuid
         try:
-            await self._casaNetwork.logIn(password, forceOffline)
+            await self._casaNetwork.logIn(password, forceOffline) # logs in on api.casambi.com
         # TODO: I don't like that this logic is in this class but I couldn't think of a better way.
         except RequestError:
             self._logger.warning(
-                "Network error while logging in. Trying to continue offline.",
-                exc_info=True,
+                "Network error while logging in on api.casambi.com. Trying to continue offline.",
+                exc_info = True,
             )
             forceOffline = True
 
@@ -147,9 +148,9 @@ class Casambi:
         await self._connectClient()
 
     async def _connectClient(self) -> None:
-        """Initiate the bluetooth connection."""
+        """Initiate the bluetooth connection to a device."""
         self._casaClient = cast(CasambiClient, self._casaClient)
-        await self._casaClient.connect()
+        await self._casaClient.connect() # connects to local Casambi BT client
         try:
             await self._casaClient.exchangeKey(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
             await self._casaClient.authenticate(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
@@ -291,20 +292,23 @@ class Casambi:
             assert target.deviceId <= 0xFF
             targetCode = (target.deviceId << 8) | 0x01
         elif isinstance(target, Group):
-            assert target.groupId <= 0xFF
-            targetCode = (target.groupId << 8) | 0x02
+            assert target.groudId <= 0xFF
+            targetCode = (target.groudId << 8) | 0x02
         elif isinstance(target, Scene):
             assert target.sceneId <= 0xFF
             targetCode = (target.sceneId << 8) | 0x04
         elif target is not None:
-            raise TypeError(f"Unknown target type {type(target)}")
+            raise TypeError(f"Unkown target type {type(target)}")
 
         self._logger.debug(
             f"Sending operation {opcode.name} with payload {b2a(state)} for {targetCode:x}"
         )
 
-        opPkt = self._opContext.prepareOperation(opcode, targetCode, state)
-
+        if self._networkType == "Classic":
+            opPkt = self._opContext.prepareOperationClassic(opcode, targetCode, state)
+        else:
+            opPkt = self._opContext.prepareOperation(opcode, targetCode, state)
+        
         try:
             await self._casaClient.send(opPkt)
         except ConnectionStateError as exc:
@@ -318,7 +322,7 @@ class Casambi:
     def _dataCallback(
         self, packetType: IncomingPacketType, data: dict[str, Any]
     ) -> None:
-        self._logger.info(f"Incoming data callback of type {packetType}")
+        self._logger.info(f"Incomming data callback of type {packetType}")
         if packetType == IncomingPacketType.UnitState:
             self._logger.debug(
                 f"Handling changed state {b2a(data['state'])} for unit {data['id']}"
@@ -344,7 +348,7 @@ class Casambi:
 
             if not found:
                 self._logger.error(
-                    f"Changed state notification for unknown unit {data['id']}"
+                    f"Changed state notification for unkown unit {data['id']}"
                 )
         else:
             self._logger.warning(f"Handler for type {packetType} not implemented!")
@@ -359,7 +363,7 @@ class Casambi:
         :param handler: The method to call when a new unit state is received.
         """
         self._unitChangedCallbacks.append(handler)
-        self._logger.debug(f"Registered unit changed handler {handler}")
+        self._logger.info(f"Registerd unit changed handler {handler}")
 
     def unregisterUnitChangedHandler(self, handler: Callable[[Unit], None]) -> None:
         """Unregister an existing unit state change handler.
@@ -368,41 +372,9 @@ class Casambi:
         :raises ValueError: If the handler isn't registered.
         """
         self._unitChangedCallbacks.remove(handler)
-        self._logger.debug(f"Removed unit changed handler {handler}")
+        self._logger.info(f"Removed unit changed handler {handler}")
 
-    def registerDisconnectCallback(self, callback: Callable[[], None]) -> None:
-        """Registers a disconnect callback.
-
-        The callback is called whenever the Bluetooth stack reports that
-        the Bluetooth connection to the network was disconnected.
-
-        :params callback: The callback to register.
-        """
-        self._disconnectCallbacks.append(callback)
-        self._logger.debug(f"Registered disconnect callback {callback}")
-
-    def unregisterDisconnectCallback(self, callback: Callable[[], None]) -> None:
-        """Unregister an existing disconnect callback.
-
-        :param callback: The callback to unregister.
-        :raises ValueError: If the callback isn't registered.
-        """
-        self._disconnectCallbacks.remove(callback)
-        self._logger.debug(f"Removed disconnect callback {callback}")
-
-    def invalidateCache(self, uuid: str) -> None:
-        """Invalidates the cache for a network.
-
-        :param uuid: The address of the network.
-        """
-
-        # We can't use our own cache here since the invalidation happens
-        # before the first connection attempt.
-        tempCache = Cache(self._cache._cachePath)
-        tempCache.setUuid(uuid)
-        tempCache.invalidateCache()
-
-    def _disconnectCallback(self) -> None:
+    def _disconnect_callback(self) -> None:
         # Mark all units as offline on disconnect.
         for u in self.units:
             u._online = False
@@ -411,18 +383,9 @@ class Casambi:
                     h(u)
                 except Exception:
                     self._logger.error(
-                        f"Exception occurred in unitChangedHandler {h}.",
+                        f"Exception occurred in unitChangedCallback {h}.",
                         exc_info=True,
                     )
-
-        for d in self._disconnectCallbacks:
-            try:
-                d()
-            except Exception:
-                self._logger.error(
-                    f"Exception occurred in disconnectCallback {d}.",
-                    exc_info=True,
-                )
 
     async def disconnect(self) -> None:
         """Disconnect from the network."""
