@@ -9,7 +9,7 @@ from bleak.backends.device import BLEDevice
 from httpx import AsyncClient, RequestError
 
 from ._cache import Cache
-from ._client import CasambiClient, ConnectionState, IncommingPacketType
+from ._client import CasambiClient, ConnectionState, IncomingPacketType
 from ._network import Network
 from ._operation import OpCode, OperationsContext
 from ._unit import Group, Scene, Unit, UnitState
@@ -102,7 +102,7 @@ class Casambi:
     ) -> None:
         """Connect and authenticate to a network.
 
-        :param addr: The MAC address of the network or a BLEDevice. Use `discover` to find the address of a network.
+        :param addr_or_device: The MAC address of the network or a BLEDevice. Use `discover` to find the address of a network.
         :param password: The password for the network.
         :param forceOffline: Whether to avoid contacting the casambi servers.
         :raises AuthenticationError: The supplied password is invalid.
@@ -117,7 +117,7 @@ class Casambi:
         else:
             # Add colons if necessary.
             if ":" not in addr_or_device:
-                addr_or_device = ":".join(["".join(p) for p in pairwise(addr)][::2])
+                addr_or_device = ":".join(["".join(p) for p in pairwise(addr_or_device)][::2])
             addr = addr_or_device
 
         self._logger.info(f"Trying to connect to casambi network {addr}...")
@@ -291,13 +291,13 @@ class Casambi:
             assert target.deviceId <= 0xFF
             targetCode = (target.deviceId << 8) | 0x01
         elif isinstance(target, Group):
-            assert target.groudId <= 0xFF
-            targetCode = (target.groudId << 8) | 0x02
+            assert target.groupId <= 0xFF
+            targetCode = (target.groupId << 8) | 0x02
         elif isinstance(target, Scene):
             assert target.sceneId <= 0xFF
             targetCode = (target.sceneId << 8) | 0x04
         elif target is not None:
-            raise TypeError(f"Unkown target type {type(target)}")
+            raise TypeError(f"Unknown target type {type(target)}")
 
         self._logger.debug(
             f"Sending operation {opcode.name} with payload {b2a(state)} for {targetCode:x}"
@@ -316,10 +316,10 @@ class Casambi:
                 raise exc
 
     def _dataCallback(
-        self, packetType: IncommingPacketType, data: dict[str, Any]
+        self, packetType: IncomingPacketType, data: dict[str, Any]
     ) -> None:
-        self._logger.info(f"Incomming data callback of type {packetType}")
-        if packetType == IncommingPacketType.UnitState:
+        self._logger.info(f"Incoming data callback of type {packetType}")
+        if packetType == IncomingPacketType.UnitState:
             self._logger.debug(
                 f"Handling changed state {b2a(data['state'])} for unit {data['id']}"
             )
@@ -344,7 +344,7 @@ class Casambi:
 
             if not found:
                 self._logger.error(
-                    f"Changed state notification for unkown unit {data['id']}"
+                    f"Changed state notification for unknown unit {data['id']}"
                 )
         else:
             self._logger.warning(f"Handler for type {packetType} not implemented!")

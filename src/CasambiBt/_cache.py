@@ -11,7 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 CACHE_PATH_DEFAULT: Final = Path(os.getcwd()) / "casambi-bt-store"
 CACHE_VERSION: Final = 1
 
-# We need a global lock since there could be multiple Caambi instances
+# We need a global lock since there could be multiple Casambi instances
 # with their own cache instances pointing to the same folder.
 _cacheLock = threading.Lock()
 
@@ -43,14 +43,14 @@ class Cache:
             if cacheVer is None:
                 cacheVer = 0
             if cacheVer < CACHE_VERSION:
-                _LOGGER.warn(
+                _LOGGER.warning(
                     "Cache is version %i, version %i is required. Recreating cache.",
                     cacheVer,
                     CACHE_VERSION,
                 )
                 shutil.rmtree(self._cachePath)
 
-        # This is not a redunant condition. We may have deleted the cache.
+        # This is not a redundant condition. We may have deleted the cache.
         if not self._cachePath.exists():
             _LOGGER.info("Creating new cache.")
             self._cachePath.mkdir(mode=0o700)

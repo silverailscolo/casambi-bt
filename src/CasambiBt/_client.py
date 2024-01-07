@@ -41,9 +41,8 @@ from .errors import (  # noqa: E402
     ProtocolError,
 )
 
-
 @unique
-class IncommingPacketType(IntEnum):
+class IncomingPacketType(IntEnum):
     UnitState = 6
     NetworkConfig = 9
 
@@ -52,8 +51,8 @@ class CasambiClient:
     def __init__(
         self,
         address_or_device: Union[str, BLEDevice],
-        dataCallback: Callable[[IncommingPacketType, dict[str, Any]], None],
-        disonnectedCallback: Callable[[], None],
+        dataCallback: Callable[[IncomingPacketType, dict[str, Any]], None],
+        disconnectedCallback: Callable[[], None],
     ) -> None:
         self._gattClient: BleakClient = None  # type: ignore[assignment]
         self._notifySignal = asyncio.Event()
@@ -72,7 +71,7 @@ class CasambiClient:
         self._callbackQueue: asyncio.Queue[tuple[BleakGATTCharacteristic, bytes]]
         self._callbackTask: Optional[asyncio.Task[None]] = None
 
-        self._address_or_devive = address_or_device
+        self._address_or_device = address_or_device
         self.address = (
             address_or_device.address
             if isinstance(address_or_device, BLEDevice)
@@ -81,7 +80,7 @@ class CasambiClient:
         self._logger = logging.getLogger(__name__)
         self._connectionState: ConnectionState = ConnectionState.NONE
         self._dataCallback = dataCallback
-        self._disconnectedCallback = disonnectedCallback
+        self._disconnectedCallback = disconnectedCallback
         self._activityLock = asyncio.Lock()
 
     def _checkState(self, desired: ConnectionState) -> None:
@@ -103,8 +102,8 @@ class CasambiClient:
 
         # To use bleak_retry_connector we need to have a BLEDevice so get one if we only have the address.
         device = (
-            self._address_or_devive
-            if isinstance(self._address_or_devive, BLEDevice)
+            self._address_or_device
+            if isinstance(self._address_or_device, BLEDevice)
             else await get_device(self.address)
         )
 
@@ -120,14 +119,14 @@ class CasambiClient:
                 BleakClient, device, "Casambi Network", self._on_disconnect
             )
         except BleakNotFoundError as e:
-            # Guess that this is the error reason since ther are no better error types
+            # Guess that this is the error reason since there are no better error types
             self._logger.error("Failed to find client.", exc_info=True)
             raise NetworkNotFoundError from e
         except BleakError as e:
             self._logger.error("Failed to connect.", exc_info=True)
             raise BluetoothError(e.args) from e
         except Exception as e:
-            self._logger.error("Unkown connection failure.", exc_info=True)
+            self._logger.error("Unknown connection failure.", exc_info=True)
             raise BluetoothError from e
 
         self._logger.info(f"Connected to {self.address}")
@@ -204,7 +203,7 @@ class CasambiClient:
             if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
                 raise ProtocolError("Failed to negotiate key!")
             else:
-                self._logger.info("Key exchange sucessful")
+                self._logger.info("Key exchange successful")
                 self._encryptor = Encryptor(self._transportKey)
 
                 # Skip auth if the network doesn't use a key.
@@ -222,33 +221,33 @@ class CasambiClient:
         while True:
             handle, data = await self._callbackQueue.get()
 
-            # Try to loose any races here.
-            # Otherwise a state change caused by the last packet might not have been handled yet
+            # Try to lose any races here.
+            # Otherwise, a state change caused by the last packet might not have been handled yet
             await asyncio.sleep(0.001)
             await self._activityLock.acquire()
             try:
-                self._callbackMulitplexer(handle, data)
+                self._callbackMultiplexer(handle, data)
             finally:
                 self._callbackQueue.task_done()
                 self._activityLock.release()
 
-    def _callbackMulitplexer(
+    def _callbackMultiplexer(
         self, handle: BleakGATTCharacteristic, data: bytes
     ) -> None:
         self._logger.debug(f"Callback on handle {handle}: {b2a(data)}")
 
         if self._connectionState == ConnectionState.CONNECTED:
-            self._exchNofityCallback(handle, data)
+            self._exchNotifyCallback(handle, data)
         elif self._connectionState == ConnectionState.KEY_EXCHANGED:
-            self._authNofityCallback(handle, data)
+            self._authNotifyCallback(handle, data)
         elif self._connectionState == ConnectionState.AUTHENTICATED:
-            self._establishedNofityCallback(handle, data)
+            self._establishedNotifyCallback(handle, data)
         else:
             self._logger.warning(
                 f"Unhandled notify in state {self._connectionState}: {b2a(data)}"
             )
 
-    def _exchNofityCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
+    def _exchNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
         if data[0] == 0x2:
             # Parse device pubkey
             x, y = struct.unpack_from("<32s32s", data, 1)
@@ -290,21 +289,21 @@ class CasambiClient:
                 self._connectionState = ConnectionState.ERROR
                 self._notifySignal.set()
         else:
-            self._logger.error(f"Unexcpedted package type in {b2a(data)}.")
+            self._logger.error(f"Unexpected package type in {b2a(data)}.")
             self._connectionState = ConnectionState.ERROR
             self._notifySignal.set()
 
     async def authenticate(self, keystore: KeyStore) -> None:
         self._checkState(ConnectionState.KEY_EXCHANGED)
 
-        self._logger.info("Authenicating channel...")
+        self._logger.info("Authenticating channel...")
         key = keystore.getKey()  # Session key
 
         if not key:
             self._logger.info("No key in keystore. Skipping auth.")
             # The channel already has to be set to authenticated by exchangeKey.
-            # This needs to be done there a non-handshake packet could be sent right after acking the key exch
-            # and we don't want that packet to end up in _authNofityCallback.
+            # This needs to be done because a non-handshake packet could be sent right after acking the key exch,
+            # and we don't want that packet to end up in _authNotifyCallback.
             return
 
         await self._activityLock.acquire()
@@ -340,7 +339,7 @@ class CasambiClient:
         finally:
             self._activityLock.release()
 
-    def _authNofityCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
+    def _authNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
         self._logger.info("Processing authentication response...")
 
         # TODO: Verify counter
@@ -358,9 +357,9 @@ class CasambiClient:
         self._notifySignal.set()
 
     async def _writeEncPacket(
-        self, packet: bytes, id: int, char: Union[str, BleakGATTCharacteristic]
+        self, packet: bytes, _id: int, char: Union[str, BleakGATTCharacteristic]
     ) -> None:
-        encPacket = self._encryptor.encryptThenMac(packet, self._getNonce(id))
+        encPacket = self._encryptor.encryptThenMac(packet, self._getNonce(_id))
         try:
             await self._gattClient.write_gatt_char(char, encPacket)
         except BleakError as e:
@@ -369,10 +368,10 @@ class CasambiClient:
             else:
                 raise e
 
-    def _getNonce(self, id: Union[int, bytes]) -> bytes:
-        if isinstance(id, int):
-            id = id.to_bytes(4, "little")
-        return self._nonce[:4] + id + self._nonce[8:]
+    def _getNonce(self, _id: Union[int, bytes]) -> bytes:
+        if isinstance(_id, int):
+            _id = _id.to_bytes(4, "little")
+        return self._nonce[:4] + _id + self._nonce[8:]
 
     async def send(self, packet: bytes) -> None:
         self._checkState(ConnectionState.AUTHENTICATED)
@@ -395,7 +394,7 @@ class CasambiClient:
         finally:
             self._activityLock.release()
 
-    def _establishedNofityCallback(
+    def _establishedNotifyCallback(
         self, handle: BleakGATTCharacteristic, data: bytes
     ) -> None:
         # TODO: Check incoming counter and direction flag
@@ -411,9 +410,9 @@ class CasambiClient:
         packetType = data[0]
         self._logger.debug(f"Incoming data of type {packetType}: {b2a(data)}")
 
-        if packetType == IncommingPacketType.UnitState:
+        if packetType == IncomingPacketType.UnitState:
             self._parseUnitStates(data[1:])
-        elif packetType == IncommingPacketType.NetworkConfig:
+        elif packetType == IncomingPacketType.NetworkConfig:
             # We don't care about the config the network thinks it has.
             # We assume that cloud config and local config match.
             # If there is a mismatch the user can solve it using the app.
@@ -430,7 +429,7 @@ class CasambiClient:
         oldPos = 0
         try:
             while pos <= len(data) - 4:
-                id = data[pos]
+                _id = data[pos]
                 flags = data[pos + 1]
                 stateLen = ((data[pos + 2] >> 4) & 15) + 1
                 prio = data[pos + 2] & 15
@@ -444,7 +443,7 @@ class CasambiClient:
                 if flags & 8:
                     pos += 1  # TODO: sid?
                 if flags & 16:
-                    pos += 1  # Unkown value
+                    pos += 1  # Unknown value
 
                 state = data[pos : pos + stateLen]
                 pos += stateLen
@@ -456,8 +455,8 @@ class CasambiClient:
                 )
 
                 self._dataCallback(
-                    IncommingPacketType.UnitState,
-                    {"id": id, "online": online, "on": on, "state": state},
+                    IncomingPacketType.UnitState,
+                    {"id": _id, "online": online, "on": on, "state": state},
                 )
 
                 oldPos = pos
