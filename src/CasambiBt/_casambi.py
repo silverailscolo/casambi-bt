@@ -9,10 +9,10 @@ from httpx import AsyncClient, RequestError
 
 from ._client import CasambiClient, ConnectionState, IncomingPacketType
 from ._network import Network
+from ._constants import NetworkType
 from ._operation import OpCode, OperationsContext
 from ._unit import Group, Scene, Unit, UnitState
 from .errors import ConnectionStateError, ProtocolError
-
 
 class Casambi:
     """Class to manage one Casambi network.
@@ -31,7 +31,8 @@ class Casambi:
         self._opContext = OperationsContext()
         self._ownHttpClient = httpClient is None
         self._httpClient = httpClient
-        self._networkType = "Classic" # or "Evolution" if it is a 5.0 BLE network # test EBR
+        self._networkType = NetworkType.EVOLUTION # if it is a 5.0 BLE network
+        # TODO this is updated to CLASSIC upon discovery as in demo EBR
 
     def _checkNetwork(self) -> None:
         if not self._casaNetwork or not self._casaNetwork._networkRevision:
@@ -90,13 +91,13 @@ class Casambi:
 
     async def connect(
         self,
-        addr_or_device: Union[str, BLEDevice],
+        addr_or_device: Union[str, BLEDevice, tuple[BLEDevice, str]],
         password: str,
         forceOffline: bool = False,
     ) -> None:
         """Connect and authenticate to a network.
 
-        :param addr: The MAC address of the network or a BLEDevice. Use `discover` to find the address of a network.
+        :param addr_or_device: The MAC address of the network or a BLEDevice. Use `_discover` to find the address of a network.
         :param password: The password for the bluetooth network, also used to log in to api.casambi.com
         :param forceOffline: Whether to avoid contacting the api.casambi.com servers.
         :raises AuthenticationError: The supplied password is invalid.
@@ -106,34 +107,43 @@ class Casambi:
         :raises BluetoothError: An error occurred in the bluetooth stack.
         """
 
-        #forceOffline = True # test for Classic
-        
+        if isinstance(addr_or_device, tuple): # used for CLASSIC networks
+                uuid = addr_or_device[1]
+                addr_or_device = addr_or_device[0]
+                self._networkType = NetworkType.CLASSIC
+                self._logger.debug(f"CLASSIC uuid = {uuid}")
+                
         if isinstance(addr_or_device, BLEDevice):
             addr = addr_or_device.address
         else:
-            # Add colons if necessary.
-            if ":" not in addr_or_device:
+            self._logger.debug(f"addr = {addr_or_device}")
+            addr = addr_or_device
+            # Add colons if necessary. # EBR: Why? They are taken out 20 lines later
+            if ":" not in addr:
                 addr_or_device = ":".join(["".join(p) for p in pairwise(addr)][::2])
-                # EBR changed, was: pairwise(addr) but that's empty here
             addr = addr_or_device
 
-        self._logger.info(f"Trying to connect to Casambi network {addr}...")
+        self._logger.info(f"Trying to connect to Casambi BLE network address {addr}, uuid {uuid}")
 
         self._casaClient = CasambiClient(
-            addr_or_device, self._dataCallback, self._disconnect_callback
+            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for CLASSIC Check EBR TODO?
         )
+        self._casaClient.setNetworkType(self._networkType)
 
         if not self._httpClient:
             self._httpClient = AsyncClient()
 
         # Retrieve network information
-        uuid = addr.replace(":", "").lower()
+        if (self._networkType == NetworkType.CLASSIC):
+            uuid = uuid.replace(":", "").lower()
+        else:
+            uuid = addr.replace(":", "").lower()
 
-        # hack uuid EBR
-        uuid = "c58b144bccd7"
-        self._logger.debug(f"uuid={uuid}")
+        self._logger.debug(f"Look up info for uuid {uuid}")
         
         self._casaNetwork = Network(uuid, self._httpClient) # create new Network instance from uuid
+        self._casaNetwork.setNetworkType(self._networkType) # TODO include as param in __init__ ?
+        
         try:
             await self._casaNetwork.logIn(password, forceOffline) # logs in on api.casambi.com
         # TODO: I don't like that this logic is in this class but I couldn't think of a better way.
@@ -153,7 +163,8 @@ class Casambi:
         await self._casaClient.connect() # connects to local Casambi BT client
         try:
             await self._casaClient.exchangeKey(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
-            await self._casaClient.authenticate(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
+            if self._networkType == NetworkType.EVOLUTION:
+                await self._casaClient.authenticate(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
         except ProtocolError as e:
             await self._casaClient.disconnect()
             raise e
@@ -304,9 +315,9 @@ class Casambi:
             f"Sending operation {opcode.name} with payload {b2a(state)} for {targetCode:x}"
         )
 
-        if self._networkType == "Classic":
+        if self._networkType == NetworkType.CLASSIC:
             opPkt = self._opContext.prepareOperationClassic(opcode, targetCode, state)
-        else:
+        elif self._networkType == NetworkType.EVOLUTION:
             opPkt = self._opContext.prepareOperation(opcode, targetCode, state)
         
         try:
@@ -322,7 +333,7 @@ class Casambi:
     def _dataCallback(
         self, packetType: IncomingPacketType, data: dict[str, Any]
     ) -> None:
-        self._logger.info(f"Incomming data callback of type {packetType}")
+        self._logger.info(f"Incoming data callback of type {packetType}")
         if packetType == IncomingPacketType.UnitState:
             self._logger.debug(
                 f"Handling changed state {b2a(data['state'])} for unit {data['id']}"
@@ -352,6 +363,7 @@ class Casambi:
                 )
         else:
             self._logger.warning(f"Handler for type {packetType} not implemented!")
+            self.logger.debug(f"Notification: {data}")
 
     def registerUnitChangedHandler(self, handler: Callable[[Unit], None]) -> None:
         """Register a new handler for unit state changed.

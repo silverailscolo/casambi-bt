@@ -9,7 +9,7 @@ import httpx
 from httpx import AsyncClient, RequestError
 
 from ._cache import getCacheDir
-from ._constants import DEVICE_NAME
+from ._constants import DEVICE_NAME, NetworkType
 from ._keystore import KeyStore
 from ._unit import Group, Scene, Unit, UnitControl, UnitControlType, UnitType
 from .errors import (
@@ -18,7 +18,6 @@ from .errors import (
     NetworkOnlineUpdateNeededError,
     NetworkUpdateError,
 )
-
 
 @dataclass()
 class _NetworkSession:
@@ -46,7 +45,7 @@ class Network:
         self.groups: list[Group] = []
         self.scenes: list[Scene] = []
 
-        self._networkType = "Classic" # or "Evolution" # test EBR
+        self._networkType = NetworkType.EVOLUTION # TODO read from network info EBR
         self._logger = logging.getLogger(__name__)
         # TODO: Create LoggingAdapter to prepend uuid.
 
@@ -82,10 +81,13 @@ class Network:
         self._logger.info("Saving type cache...")
         pickle.dump(self._unitTypes, self._typeCachePath.open("wb"))
 
+    def setNetworkType(self, NetworkType: type) -> None:
+        self._networkType = type
+        
     async def getNetworkId(self, forceOffline: bool = False) -> None:
         """ Fetch network id from casambi.com
 
-        :param forceOffline: Whether to skip online query e.g. for Classic network type
+        :param forceOffline: Whether to skip online query e.g. for Classic network type/when we have no Casambi API key
         :raises RequestError: request failed
         :raises NetworkOnlineUpdateNeededError: no network id found, either in cache or from casambi.com
         """
@@ -102,10 +104,10 @@ class Network:
             if not self._id:
                 raise NetworkOnlineUpdateNeededError("Network isn't cached.")
 
-            # Classic Casambi cannot connect to cloud, so must skip? TODO
+            # NOTE: Classic Casambi must access api.casambi.com using the network BT address as uuid
         else :
             getNetworkIdUrl = f"https://api.casambi.com/network/uuid/{self._uuid}"
-            self._logger.debug(f"Fetching {getNetworkIdUrl}")
+            self._logger.debug(f"Fetching {getNetworkIdUrl} from api.casambi.com")
             try:
                 res = await self._httpClient.get(getNetworkIdUrl)
             except RequestError as err:
@@ -118,14 +120,9 @@ class Network:
                     )
                     #return
 
-        self._logger.info(f"NetworkId = {self._id} Result from api: {res}")
-
-        if not self._id:
-            self._id = "BkofKL0JMXLEDUr4V1znQkGK5cqXgKNc" # EBR manually fetched from api.casambi.com
-
-        self._logger.info(f"NetworkId = {self._id} Result from api: {res}")
+        self._logger.info(f"NetworkId = {self._id}. Result from api: {res}")
         
-        if res.status_code == httpx.codes.NOT_FOUND: # << Classic network/no Casambi API key: alternative login? TODO EBR
+        if res.status_code == httpx.codes.NOT_FOUND:
             raise NetworkNotFoundError(
                 "API failed to find network. Is your network configured correctly?"
             )
@@ -134,10 +131,10 @@ class Network:
                 f"Getting network id from api.casambi.com returned unexpected status {res.status_code}"
             )
 
-        if not forceOffline: # Classic?
+        if not forceOffline: # also works for CLASSIC
             new_id = cast(str, res.json()["id"])
             if self._id != new_id:
-                self._logger.info(f"Network id changed from {self._id} to {new_id}.")
+                self._logger.info(f"Network id changed from {self._id} to {new_id} using api.casambi.com.")
                 networkCacheFile.write_text(new_id)
                 self._id = new_id
         self._logger.info(f"Got network id {self._id}.")
@@ -151,7 +148,8 @@ class Network:
         return self._keystore
 
     async def logIn(self, password: str, forceOffline: bool = False) -> None:
-        """ Login on api.casambi.com to fetch configurations; returned info was previously stored by client app during hardware setup
+        """ Login on api.casambi.com to fetch configurations.
+            Returned info was previously stored there by gateway app during hardware setup.
 
         """
         await self.getNetworkId(forceOffline)
@@ -160,7 +158,7 @@ class Network:
         if self.authenticated() or forceOffline:
             return
 
-        self._logger.info("Logging in to api.casambi.com ...")
+        self._logger.info("Logging in to api.casambi.com with id {self._id}")
         getSessionUrl = f"https://api.casambi.com/network/{self._id}/session"
 
         res = await self._httpClient.post(
@@ -236,9 +234,6 @@ class Network:
                 )
 
         # Parse general information
-        #if forceOffline:
-        #    self._networkName = "Mein Netzwerk" # EBR make a var to set on top
-        #else :
 
         # Parse keys if there are any. Otherwise the network is probably a Classic network.
         if "keyStore" in network["network"]:
@@ -249,61 +244,26 @@ class Network:
 
         self._networkName = network["network"]["name"]
             
-        # TODO: Parse managerKey and visitorKey for Classic networks.
+        # TODO: Parse managerKey and visitorKey for Classic networks. They are visible on api.casambi.com
         
-        # manually add Classic keys. Also without Casambi API access key?
         if (self._keystore.size() == 0) :
-            self._logger.debug("Empty keystore, Classic?") # EBR
-            _key1 = {
-                  "id": 0,
-                  "type": 1,
-                  "role": 3,
-                  "name": "managerKey",
-                  "key": "547269616e67656c31"
-            }
-            self._keystore.addKey(_key1)
+            self._logger.warning("Empty keystore")
 
         # Parse units
         self.units = []
-        if (self._networkType == "Classic") : # EBR
-            # manually add 2 "Sento" units EBR TODO Occhio Sento unit type = 816
-            _unitTypeId = "816"
-            uType = await self._fetchUnitInfo(_unitTypeId) # fetch from api.casambi.com
-            unit1 = Unit(
-                _unitTypeId,
-                "3",
-                "D28C90BC-0330051A-1800C58B-144BCCD7",
-                "81b4d28c90bc",
-                "Sento beneden",
-                "Classic/26.24",
+        units = network["network"]["units"]
+        for u in units:
+            uType = await self._fetchUnitInfo(u["type"]) # from api.casambi.com
+            uObj = Unit(
+                u["type"],
+                u["deviceID"],
+                u["uuid"],
+                u["address"],
+                u["name"],
+                str(u["firmware"]),
                 uType,
             )
-            self.units.append(unit1)
-            # TODO could get name from BLE reply
-            unit2 = Unit(
-                _unitTypeId,
-                "2",
-                "07003333-0330051C-0A00C58B-144BCCD7",
-                "cadf07003333",
-                "Sento boven",
-                "Classic/26.24",
-                uType,
-            )
-            self.units.append(unit2)
-        else:
-            units = network["network"]["units"]
-            for u in units:
-                uType = await self._fetchUnitInfo(u["type"]) # from api.casambi.com
-                uObj = Unit(
-                    u["type"],
-                    u["deviceID"],
-                    u["uuid"],
-                    u["address"],
-                    u["name"],
-                    str(u["firmware"]),
-                    uType,
-                )
-                self.units.append(uObj)
+            self.units.append(uObj)
         
         # Parse cells
         self.groups = []
@@ -326,7 +286,7 @@ class Network:
                 )
                 if len(unitMatch) != 1:
                     self._logger.warning(
-                        f"Incosistent unit reference to {subC['unit']} in group {c['groupID']}. Got {len(unitMatch)} matches."
+                        f"Inconsistent unit reference to {subC['unit']} in group {c['groupID']}. Got {len(unitMatch)} matches."
                     )
                     continue
                 group_units.append(unitMatch[0])
@@ -336,11 +296,11 @@ class Network:
 
         # Parse scenes
         self.scenes = []
-        if (self._networkType != "Classic") :
-            scenes = network["network"]["scenes"]
-            for s in scenes:
-                sObj = Scene(s["sceneID"], s["name"])
-                self.scenes.append(sObj)
+        #if (self._networkType != NetworkType.CLASSIC): # or EVOLUTION) :
+        scenes = network["network"]["scenes"]
+        for s in scenes:
+            sObj = Scene(s["sceneID"], s["name"])
+            self.scenes.append(sObj)
 
         # TODO: Parse more stuff
 

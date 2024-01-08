@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from CasambiBt import Casambi, discover
+#from _network import NetworkType
 
 _LOGGER = logging.getLogger()
 _LOGGER.addHandler(logging.StreamHandler())
@@ -12,38 +13,53 @@ async def main() -> None:
     
     # Discover networks
     print("Searching...")
-    devices = await discover()
-    if (len(devices) == 0) :
+    devicesets = await discover()
+    if (len(devicesets) == 0) :
         print("No Casambi BLE networks discovered")
         return 
     
-    for i, d in enumerate(devices):
-        print(f"[{i}]\t{d.address} uuid:{d.metadata["uuids"]}")
+    for i, devset in enumerate(devicesets):
+        d = devset[0]
+        print(f"[{i}]\t{d.address} address: {devset[1].hex(':')}")
 
-    selection = int(input("Select network: "))
+    selection = int(input("Select a network: "))
 
-    device = devices[selection]
+    devset = devicesets[selection]
+    device = devset[0]
+    classic_uuid : str = devset[1].hex(':') # we need this as uuid for CLASSIC network lookup on api.casambi.com
+
+    print(f"address:{device.address} uuid:{device.details}")
     
     pwd = input("Enter password: ")
 
     # Connect to the selected network
     casa = Casambi()
     try:
-        await casa.connect(device, pwd)
+        if classic_uuid: # CLASSIC
+            await casa.connect(tuple((device, classic_uuid)), pwd)
+        else:
+            await casa.connect(device, pwd) # EVOLUTION
 
-        print("Connected")
+        print("Demo connected")
 
+        # Notify starts in _casambi
+        
         # Turn all lights on
-        await casa.turnOn(None)
-        await asyncio.sleep(5)
+        #await casa.turnOn(None)
+        #await asyncio.sleep(5)
 
         # Turn all lights off
         #await casa.setLevel(None, 0)
-        await asyncio.sleep(1)
+        #await asyncio.sleep(1)
 
         # Print the state of all units
+        print("===========")
         for u in casa.units:
             print(u.__repr__())
+
+        await asyncio.sleep(1000)
+        # listen for notifications
+        
     finally:
         await casa.disconnect()
 
