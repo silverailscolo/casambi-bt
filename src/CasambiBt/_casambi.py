@@ -14,6 +14,7 @@ from ._operation import OpCode, OperationsContext
 from ._unit import Group, Scene, Unit, UnitState
 from .errors import ConnectionStateError, ProtocolError
 
+
 class Casambi:
     """Class to manage one Casambi network.
 
@@ -31,7 +32,7 @@ class Casambi:
         self._opContext = OperationsContext()
         self._ownHttpClient = httpClient is None
         self._httpClient = httpClient
-        self._networkGrade = NetworkGrade.EVOLUTION # if it is a 5.0 BLE network
+        self._networkGrade = NetworkGrade.EVOLUTION  # if it is a 5.0 BLE network
         # TODO this is updated to CLASSIC upon discovery as in demo EBR
 
     def _checkNetwork(self) -> None:
@@ -108,10 +109,10 @@ class Casambi:
         """
 
         if isinstance(addr_or_device, tuple): # used for CLASSIC networks
-                uuid = addr_or_device[1]
-                addr_or_device = addr_or_device[0]
-                self._networkGrade = NetworkGrade.CLASSIC
-                self._logger.debug(f"CLASSIC uuid = {uuid}")
+            uuid = addr_or_device[1]
+            addr_or_device = addr_or_device[0]
+            self._networkGrade = NetworkGrade.CLASSIC
+            self._logger.debug(f"CLASSIC uuid = {uuid}")
                 
         if isinstance(addr_or_device, BLEDevice):
             addr = addr_or_device.address
@@ -134,7 +135,7 @@ class Casambi:
             self._httpClient = AsyncClient()
 
         # Retrieve network information
-        if (self._networkGrade == NetworkGrade.CLASSIC):
+        if self._networkGrade == NetworkGrade.CLASSIC:
             uuid = uuid.replace(":", "").lower()
         else:
             uuid = addr.replace(":", "").lower()
@@ -361,11 +362,11 @@ class Casambi:
 
             if not found:
                 self._logger.error(
-                    f"Changed state notification for unkown unit {data['id']}"
+                    f"Changed state notification for unknown unit {data['id']}"
                 )
         else:
             self._logger.warning(f"Handler for type {packetType} not implemented!")
-            self.logger.debug(f"Notification: {data}")
+            self._logger.debug(f"Notification: {data}")
 
     def registerUnitChangedHandler(self, handler: Callable[[Unit], None]) -> None:
         """Register a new handler for unit state changed.
@@ -377,7 +378,7 @@ class Casambi:
         :param handler: The method to call when a new unit state is received.
         """
         self._unitChangedCallbacks.append(handler)
-        self._logger.info(f"Registerd unit changed handler {handler}")
+        self._logger.info(f"Registered unit changed handler {handler}")
 
     def unregisterUnitChangedHandler(self, handler: Callable[[Unit], None]) -> None:
         """Unregister an existing unit state change handler.

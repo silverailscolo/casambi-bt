@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from CasambiBt import Casambi, discover
-#from _network import NetworkGrade
+# from _network import NetworkGrade
 
 _LOGGER = logging.getLogger()
 _LOGGER.addHandler(logging.StreamHandler())
@@ -14,7 +14,7 @@ async def main() -> None:
     # Discover networks
     print("Searching...")
     devicesets = await discover()
-    if (len(devicesets) == 0) :
+    if len(devicesets) == 0:
         print("No Casambi BLE networks discovered")
         return 
     
@@ -26,7 +26,7 @@ async def main() -> None:
 
     devset = devicesets[selection]
     device = devset[0]
-    classic_uuid : str = devset[1].hex(':') # we need this as uuid for CLASSIC network lookup on api.casambi.com
+    classic_uuid: str = devset[1].hex(':')  # we need this as uuid for CLASSIC network lookup on api.casambi.com
 
     print(f"address:{device.address} uuid:{device.details}")
     
@@ -35,22 +35,22 @@ async def main() -> None:
     # Connect to the selected network
     casa = Casambi()
     try:
-        if classic_uuid: # CLASSIC
+        if classic_uuid:  # CLASSIC
             await casa.connect(tuple((device, classic_uuid)), pwd)
         else:
-            await casa.connect(device, pwd) # EVOLUTION
+            await casa.connect(device, pwd)  # EVOLUTION
 
         print("Demo connected")
 
         # Notify starts in _casambi
         
         # Turn all lights on
-        #await casa.turnOn(None)
-        #await asyncio.sleep(5)
+        # await casa.turnOn(None)
+        # await asyncio.sleep(5)
 
         # Turn all lights off
-        #await casa.setLevel(None, 0)
-        #await asyncio.sleep(1)
+        # await casa.setLevel(None, 0)
+        # await asyncio.sleep(1)
 
         # Print the state of all units
         print("===========")
@@ -61,7 +61,7 @@ async def main() -> None:
         for s in casa.scenes:
             print(s.__repr__())
             
-        #await asyncio.sleep(60)
+        # await asyncio.sleep(60)
         # listen for notifications
         
     finally:

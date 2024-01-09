@@ -2,7 +2,7 @@ import json
 import logging
 import pickle
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, cast
 
 import httpx
@@ -19,6 +19,7 @@ from .errors import (
     NetworkUpdateError,
 )
 
+
 @dataclass()
 class _NetworkSession:
     session: str
@@ -30,7 +31,7 @@ class _NetworkSession:
     role: int = 3  # TODO: Support other role types?
 
     def expired(self) -> bool:
-        return datetime.utcnow() > self.expires
+        return datetime.now(timezone.utc) > self.expires
 
 
 class Network:
@@ -45,7 +46,7 @@ class Network:
         self.groups: list[Group] = []
         self.scenes: list[Scene] = []
 
-        self._networkGrade = NetworkGrade.EVOLUTION # Default, updated from network info ["grade"]
+        self._networkGrade = NetworkGrade.EVOLUTION  # Default, updated from network info ["grade"]
         self._logger = logging.getLogger(__name__)
         # TODO: Create LoggingAdapter to prepend uuid.
 
@@ -108,7 +109,7 @@ class Network:
                 raise NetworkOnlineUpdateNeededError("Network isn't cached.")
 
             # NOTE: Classic Casambi must access api.casambi.com using the network BT address as uuid
-        else :
+        else:
             getNetworkIdUrl = f"https://api.casambi.com/network/uuid/{self._uuid}"
             self._logger.debug(f"Fetching {getNetworkIdUrl} from api.casambi.com")
             try:
@@ -119,9 +120,9 @@ class Network:
                 else:
                     self._logger.warning(
                         "Network error while fetching network id. Continuing with cache.",
-                        exc_info = True,
+                        exc_info=True,
                     )
-                    #return
+                    # return
 
         self._logger.info(f"NetworkId = {self._id}. Result from api: {res}")
         
@@ -134,7 +135,7 @@ class Network:
                 f"Getting network id from api.casambi.com returned unexpected status {res.status_code}"
             )
 
-        if not forceOffline: # also works for CLASSIC
+        if not forceOffline:  # also works for CLASSIC
             new_id = cast(str, res.json()["id"])
             if self._id != new_id:
                 self._logger.info(f"Network id changed from {self._id} to {new_id} using api.casambi.com.")
@@ -168,7 +169,7 @@ class Network:
         getSessionUrl = f"https://api.casambi.com/network/{self._id}/session"
 
         res = await self._httpClient.post(
-            getSessionUrl, json={"password": password, "deviceName": DEVICE_NAME} # DEVICE_NAME is a placeholder name
+            getSessionUrl, json={"password": password, "deviceName": DEVICE_NAME}  # DEVICE_NAME is a placeholder name
         )
         if res.status_code == httpx.codes.OK:
             # Parse session
@@ -176,7 +177,8 @@ class Network:
             sessionJson["expires"] = datetime.utcfromtimestamp(
                 sessionJson["expires"] / 1000
             )
-            self._session = _NetworkSession(**sessionJson) # stores session info returned from api.casambi.com for later use
+            self._session = _NetworkSession(**sessionJson)
+            # stores session info returned from api.casambi.com for later use
             self._logger.info("Login successful.")
             self._saveSession()
         else:
@@ -199,7 +201,7 @@ class Network:
                 f"Loaded cached network. Revision: {self._networkRevision}"
             )
         else:
-            #raise NetworkOnlineUpdateNeededError("Network isn't cached.")
+            # raise NetworkOnlineUpdateNeededError("Network isn't cached.")
             self._networkRevision = 0
 
         if not forceOffline:
@@ -253,7 +255,7 @@ class Network:
             
         # TODO: Parse managerKey and visitorKey for Classic networks. They are visible on api.casambi.com
         
-        if (self._keystore.size() == 0) :
+        if self._keystore.size() == 0:
             self._logger.warning("Empty keystore")
 
         # Parse units
@@ -284,7 +286,7 @@ class Network:
             group_units = []
             # We assume no nested groups here
             for subC in c["cells"]:
-                # Ignore everyting that isn't a unit
+                # Ignore everything that isn't a unit
                 if subC["type"] != 1:
                     continue
 
@@ -303,7 +305,7 @@ class Network:
 
         # Parse scenes
         self.scenes = []
-        #if (self._networkGrade != NetworkGrade.CLASSIC): # or EVOLUTION) :
+        # if (self._networkGrade != NetworkGrade.CLASSIC):  # or EVOLUTION) :
         scenes = network["network"]["scenes"]
         for s in scenes:
             sObj = Scene(s["sceneID"], s["name"])
@@ -315,16 +317,16 @@ class Network:
 
         self._logger.info("Network updated.")
 
-    async def _fetchUnitInfo(self, id: int) -> UnitType:
-        self._logger.info(f"Fetching unit type for id {id}...")
+    async def _fetchUnitInfo(self, _id: int) -> UnitType:
+        self._logger.info(f"Fetching unit type for id {_id}...")
 
         # Check whether unit type is already cached
-        cachedType = self._unitTypes.get(id)
+        cachedType = self._unitTypes.get(_id)
         if cachedType:
             self._logger.info("Using cached type.")
             return cachedType
 
-        getUnitInfoUrl = f"https://api.casambi.com/fixture/{id}"
+        getUnitInfoUrl = f"https://api.casambi.com/fixture/{_id}"
         async with AsyncClient() as request:
             res = await request.get(getUnitInfoUrl)
 
@@ -338,15 +340,15 @@ class Network:
         for controlJson in unitTypeJson["controls"]:
             typeStr = controlJson["type"].upper()
             try:
-                type = UnitControlType[typeStr]
+                _type = UnitControlType[typeStr]
             except KeyError:
                 self._logger.warning(
-                    f"Unsupported control mode {typeStr} in fixture {id}."
+                    f"Unsupported control mode {typeStr} in fixture {_id}."
                 )
-                type = UnitControlType.UNKOWN
+                _type = UnitControlType.UNKOWN
 
             controlObj = UnitControl(
-                type,
+                _type,
                 controlJson["offset"],
                 controlJson["length"],
                 controlJson["default"],
@@ -367,7 +369,7 @@ class Network:
             controls,
         )
 
-        # Chache unit type
+        # Cache unit type
         self._unitTypes[unitTypeObj.id] = unitTypeObj
 
         self._logger.info("Successfully fetched unit type.")

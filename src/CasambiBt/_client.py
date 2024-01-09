@@ -30,8 +30,9 @@ class ConnectionState(IntEnum):
     CONNECTED = 1
     KEY_EXCHANGED = 2
     AUTHENTICATED = 3
-    UNENCRYPTED = 4 # for CLASSIC
+    UNENCRYPTED = 4  # for CLASSIC
     ERROR = 99
+
 
 # We need to move these imports here to prevent a cycle.
 from .errors import (  # noqa: E402
@@ -40,6 +41,7 @@ from .errors import (  # noqa: E402
     NetworkNotFoundError,
     ProtocolError,
 )
+
 
 @unique
 class IncomingPacketType(IntEnum):
@@ -68,7 +70,7 @@ class CasambiClient:
         self._outPacketCount = 0
         self._inPacketCount = 0
 
-        self._networkGrade = NetworkGrade.EVOLUTION # or .CLASSIC # todo use some attribute eg. uuid != addr? EBR
+        self._networkGrade = NetworkGrade.EVOLUTION  # or .CLASSIC # todo use some attribute eg. uuid != addr? EBR
 
         self._callbackQueue: asyncio.Queue[tuple[BleakGATTCharacteristic, bytes]]
         self._callbackTask: Optional[asyncio.Task[None]] = None
@@ -113,7 +115,7 @@ class CasambiClient:
             self._logger.error("Failed to discover client.")
             raise NetworkNotFoundError
 
-        #if (self._networkGrade == NetworkGrade.EVOLUTION): # TODO check EBR
+        # if (self._networkGrade == NetworkGrade.EVOLUTION):  # TODO check EBR
         try:
             # If we are already connected to the device, the key exchange will fail.
             await close_stale_connections(device)
@@ -153,7 +155,7 @@ class CasambiClient:
         try:
             # Initiate communication with device            
             firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
-            #self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
+            # self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
                         
             # Check type and protocol version
             if not (firstResp[0] == 0x1 and firstResp[1] == 0xA):
@@ -234,7 +236,7 @@ class CasambiClient:
         # only for CLASSIC
         self._checkState(ConnectionState.CONNECTED)
 
-        self._logger.info("SCLASSIC tarting unencrypted connect")
+        self._logger.info("CLASSIC starting unencrypted connect")
 
         await self._activityLock.acquire()
         try:
@@ -276,8 +278,8 @@ class CasambiClient:
             # 21 bytes at offset 2 (actual buffer size is 13)
             # see: https://docs.python.org/3/library/struct.html
                 
-            #descr = self._gattClient.read_gatt_descriptor
-            #self._logger.debug(f"descriptor: {descr}")
+            # descr = self._gattClient.read_gatt_descriptor
+            # self._logger.debug(f"descriptor: {descr}")
             # descriptor: <bound method BleakClient.read_gatt_descriptor of <BleakClient, EB6F92F7-3599-159F-9782-0398CE2AA4E5, <class 'bleak.backends.corebluetooth.client.BleakClientCoreBluetooth'>>>
 
             #characteristics = self._gattClient.characteristics # try to learn EBR, but .characteristics not available in Casambi
@@ -307,14 +309,13 @@ class CasambiClient:
 
         # CLASSIC uses simple connect() Just Works, STK = 0
         self._connectionState = ConnectionState.UNENCRYPTED # TODO EBR
-            
  
-    def setNetworkGrade(self, NetworkGrade: type) -> None:
-        self._networkGrade = type
+    def setNetworkGrade(self, grade: NetworkGrade) -> None:
+        self._networkGrade = grade
 
     # An easy notify function, just print the received data DEBUG EBR
     def my_notification_handler(sender, data):
-        self._logger.info("_notify" + (', '.join('{:02x}'.format(x) for x in data)))
+        sender._logger.info("_notify" + (', '.join('{:02x}'.format(x) for x in data)))
     
     def _queueCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
         self._logger.info("Starting _queueCallback")
@@ -401,12 +402,12 @@ class CasambiClient:
             self._checkState(ConnectionState.KEY_EXCHANGED)
 
         self._logger.info("Authenticating channel...")
-        key = keystore.getKey()  # Session key, returns key with highest role (0-3)
+        key = keystore.getKey()  # Session key, returns key with the highest role (0-3)
 
         if not key:
             self._logger.info("No key in keystore. Skipping auth.")
             # The channel already has to be set to authenticated by exchangeKey.
-            # This needs to be done because a non-handshake packet could be sent right after acking the key exch
+            # This needs to be done because a non-handshake packet could be sent right after acking the key exch,
             # and we don't want that packet to end up in _authNotifyCallback.
             return
 
@@ -461,9 +462,9 @@ class CasambiClient:
         self._notifySignal.set()
 
     async def _writeEncPacket(
-        self, packet: bytes, id: int, char: Union[str, BleakGATTCharacteristic]
+        self, packet: bytes, _id: int, char: Union[str, BleakGATTCharacteristic]
     ) -> None:
-        encPacket = self._encryptor.encryptThenMac(packet, self._getNonce(id))
+        encPacket = self._encryptor.encryptThenMac(packet, self._getNonce(_id))
         try:
             await self._gattClient.write_gatt_char(char, encPacket)
         except BleakError as e:
@@ -517,10 +518,10 @@ class CasambiClient:
                 currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
                 self._logger.debug(f"Read packet currentval = {b2a(currentval)}. Notify started")
 
-                client.start_notify(char_uuid, notifyCallback)
+                await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.notifyCallback)
                 
-                #await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, headerPacket, response=True) # this is experimental for Classic
-                #await self._writeEncPacket( # EncPacket = only for Evolution
+                # await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, headerPacket, response=True) # this is experimental for Classic
+                # await self._writeEncPacket( # EncPacket = only for Evolution
                 #    headerPacket, self._outPacketCount, CASA_AUTH_CHAR_UUID
                 #)
                 self._outPacketCount += 1

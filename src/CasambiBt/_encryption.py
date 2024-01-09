@@ -12,11 +12,11 @@ def _xor(data: bytes, key: bytes) -> bytes:
     return bytes(a ^ b for a, b in zip(data, key))
 
 
-def _encHelper(cipher: Cipher, input: bytes) -> bytes:
-    assert len(input) % 16 == 0
+def _encHelper(cipher: Cipher, _input: bytes) -> bytes:
+    assert len(_input) % 16 == 0
 
     context = cipher.encryptor()
-    return context.update(input) + context.finalize()
+    return context.update(_input) + context.finalize()
 
 
 class Encryptor:

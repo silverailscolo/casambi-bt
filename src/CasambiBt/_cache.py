@@ -22,10 +22,10 @@ def _ensureCacheValid() -> None:
         CACHE_VER_FILE.write_text(str(CACHE_VERSION))
 
 
-def getCacheDir(id: str) -> Path:
+def getCacheDir(_id: str) -> Path:
     _ensureCacheValid()
 
-    cacheDir = CACHE_PATH / id
+    cacheDir = CACHE_PATH / _id
     if not cacheDir.exists():
         cacheDir.mkdir()
 
