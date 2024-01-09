@@ -9,7 +9,7 @@ import httpx
 from httpx import AsyncClient, RequestError
 
 from ._cache import getCacheDir
-from ._constants import DEVICE_NAME, NetworkType
+from ._constants import DEVICE_NAME, NetworkGrade
 from ._keystore import KeyStore
 from ._unit import Group, Scene, Unit, UnitControl, UnitControlType, UnitType
 from .errors import (
@@ -45,7 +45,7 @@ class Network:
         self.groups: list[Group] = []
         self.scenes: list[Scene] = []
 
-        self._networkType = NetworkType.EVOLUTION # TODO read from network info EBR
+        self._networkGrade = NetworkGrade.EVOLUTION # Default, updated from network info ["grade"]
         self._logger = logging.getLogger(__name__)
         # TODO: Create LoggingAdapter to prepend uuid.
 
@@ -81,8 +81,8 @@ class Network:
         self._logger.info("Saving type cache...")
         pickle.dump(self._unitTypes, self._typeCachePath.open("wb"))
 
-    def setNetworkType(self, NetworkType: type) -> None:
-        self._networkType = type
+    def setNetworkGrade(self, _networkGrade: type) -> None:
+        self._networkGrade = type
         
     async def getNetworkId(self, forceOffline: bool = False) -> None:
         """ Fetch network id from casambi.com
@@ -94,11 +94,14 @@ class Network:
         self._logger.info(f"Getting network id for uuid {self._uuid}...")
 
         networkCacheFile = self._cachePath / "networkid"
+        gradeCacheFile = self._cachePath / "networkgrade"
         res = None
         
         if networkCacheFile.exists():
             self._id = networkCacheFile.read_text()
-
+        if gradeCacheFile.exists():
+            self._grade = gradeCacheFile.read_text()
+            
         if forceOffline:
             self._logger.info("forcedOffline network line 101")
             if not self._id:
@@ -137,7 +140,10 @@ class Network:
                 self._logger.info(f"Network id changed from {self._id} to {new_id} using api.casambi.com.")
                 networkCacheFile.write_text(new_id)
                 self._id = new_id
-        self._logger.info(f"Got network id {self._id}.")
+            new_grade = cast(str, res.json()["grade"])
+            if self._networkGrade != new_grade:
+                self._networkGrade = new_grade
+        self._logger.info(f"Got network id {self._id}, grade {self._networkGrade}.")
 
     def authenticated(self) -> bool:
         if not self._session:
@@ -235,12 +241,13 @@ class Network:
 
         # Parse general information
 
-        # Parse keys if there are any. Otherwise the network is probably a Classic network.
+        # Parse keys if there are any. Otherwise the network is probably a Classic network. ?? EBR TODO
         if "keyStore" in network["network"]:
             self._logger.debug("parsing keys")
             keys = network["network"]["keyStore"]["keys"]
             for k in keys:
                 self._keystore.addKey(k)
+                self._logger.debug(f"Added key {k}")
 
         self._networkName = network["network"]["name"]
             
@@ -296,7 +303,7 @@ class Network:
 
         # Parse scenes
         self.scenes = []
-        #if (self._networkType != NetworkType.CLASSIC): # or EVOLUTION) :
+        #if (self._networkGrade != NetworkGrade.CLASSIC): # or EVOLUTION) :
         scenes = network["network"]["scenes"]
         for s in scenes:
             sObj = Scene(s["sceneID"], s["name"])

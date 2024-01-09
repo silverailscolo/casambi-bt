@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from CasambiBt import Casambi, discover
-#from _network import NetworkType
+#from _network import NetworkGrade
 
 _LOGGER = logging.getLogger()
 _LOGGER.addHandler(logging.StreamHandler())
@@ -56,8 +56,12 @@ async def main() -> None:
         print("===========")
         for u in casa.units:
             print(u.__repr__())
-
-        await asyncio.sleep(1000)
+        # Print the state of all scenes
+        print("===========")
+        for s in casa.scenes:
+            print(s.__repr__())
+            
+        #await asyncio.sleep(60)
         # listen for notifications
         
     finally:

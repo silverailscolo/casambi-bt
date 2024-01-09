@@ -19,7 +19,7 @@ from bleak_retry_connector import (
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from ._constants import CASA_AUTH_CHAR_UUID, NetworkType
+from ._constants import CASA_AUTH_CHAR_UUID, CASA_AUTH_CHAR_UUID2, CASA_AUTH_CHAR_UUID3, NetworkGrade
 from ._encryption import Encryptor
 from ._keystore import KeyStore
 
@@ -30,6 +30,7 @@ class ConnectionState(IntEnum):
     CONNECTED = 1
     KEY_EXCHANGED = 2
     AUTHENTICATED = 3
+    UNENCRYPTED = 4 # for CLASSIC
     ERROR = 99
 
 # We need to move these imports here to prevent a cycle.
@@ -67,7 +68,7 @@ class CasambiClient:
         self._outPacketCount = 0
         self._inPacketCount = 0
 
-        self._networkType = NetworkType.EVOLUTION # or .CLASSIC # todo use some attribute eg. uuid != addr? EBR
+        self._networkGrade = NetworkGrade.EVOLUTION # or .CLASSIC # todo use some attribute eg. uuid != addr? EBR
 
         self._callbackQueue: asyncio.Queue[tuple[BleakGATTCharacteristic, bytes]]
         self._callbackTask: Optional[asyncio.Task[None]] = None
@@ -112,7 +113,7 @@ class CasambiClient:
             self._logger.error("Failed to discover client.")
             raise NetworkNotFoundError
 
-        #if (self._networkType == NetworkType.EVOLUTION): # TODO check EBR
+        #if (self._networkGrade == NetworkGrade.EVOLUTION): # TODO check EBR
         try:
             # If we are already connected to the device, the key exchange will fail.
             await close_stale_connections(device)
@@ -137,18 +138,115 @@ class CasambiClient:
     def _on_disconnect(self, client: BleakClient) -> None:
         if self._connectionState != ConnectionState.NONE:
             self._logger.info(f"Received disconnect callback from {self.address}")
-        if self._connectionState == ConnectionState.AUTHENTICATED:
+        if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.UNENCRYPTED:
+            # for CLASSIC:UNENCRYPTED
             self._disconnectedCallback()
         self._connectionState = ConnectionState.NONE
 
     async def exchangeKey(self, keystore: KeyStore) -> None:
+        # not used in CLASSIC
         self._checkState(ConnectionState.CONNECTED)
 
-        self._logger.info("Starting key exchange...") # OK up to here
+        self._logger.info("Starting secure key exchange...")
+
+        await self._activityLock.acquire()
+        try:
+            # Initiate communication with device            
+            firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
+            #self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
+                        
+            # Check type and protocol version
+            if not (firstResp[0] == 0x1 and firstResp[1] == 0xA):
+                self._connectionState = ConnectionState.ERROR
+                raise ProtocolError(
+                    "Unexpected answer from device! Wrong device or protocol version?"
+                )
+
+            # Parse device info
+            self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
+                ">BHH16s", firstResp, 2 # "BHH16s" = format string, 2 = offset
+            )
+            self._logger.debug(
+                f"Parsed Evolution mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
+            )
+
+            # Device will initiate key exchange, so listen for that
+            self._logger.debug("Starting notify")
+            await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.my_notification_handler)
+            self._logger.debug("sleep notify")
+            await asyncio.sleep(5.0)
+            await self._gattClient.stop_notify(CASA_AUTH_CHAR_UUID)
+            
+            await self._gattClient.start_notify(
+                CASA_AUTH_CHAR_UUID, self._queueCallback
+            )
+        finally:
+            self._activityLock.release()
+
+        # Wait for EVOLUTION key exchange, will get notified by _exchNotifyCallback
+        self._logger.debug("Key exchange Evolution - _notifySignal")
+        await self._notifySignal.wait() # Classic blocks here, BLE4.0 without Secure Connect
+        # it seems no (valid format?) key exchange on Classic networks?
+        self._logger.debug("Key exchange - lock")
+        await self._activityLock.acquire()
+        try:
+            self._logger.debug("Key exchange - clearing signal")
+            self._notifySignal.clear()
+            if self._connectionState == ConnectionState.ERROR:
+                raise ProtocolError("Invalid key exchange initiation.")
+
+            # Respond to key exchange
+            pubNums = self._pubKey.public_numbers()
+            keyExchResponse = struct.pack(
+                ">B32s32sB",
+                0x2,
+                pubNums.x.to_bytes(32, byteorder="little", signed=False),
+                pubNums.y.to_bytes(32, byteorder="little", signed=False),
+                0x1,
+            )
+            self._logger.debug("Key exchange - write_gatt_char")
+            await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, keyExchResponse)
+        finally:
+            self._activityLock.release()
+
+        # Wait for success response from _exchNotifyCallback
+        self._logger.debug("waiting for _exchNotifyCallback")
+        await self._notifySignal.wait() # Classic blocks here
+        # it seems there's no key exchange on Classic networks?
+        await self._activityLock.acquire()
+        try:
+            self._notifySignal.clear()
+            if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
+                raise ProtocolError("Failed to negotiate key!")
+            else:
+                self._logger.info("Key exchange successful")
+                self._encryptor = Encryptor(self._transportKey)
+
+                # Skip auth if the network doesn't use a key.
+                if keystore.getKey():
+                    self._connectionState = ConnectionState.KEY_EXCHANGED
+                else:
+                    self._connectionState = ConnectionState.AUTHENTICATED
+        finally:
+            self._activityLock.release()
+
+    async def classicStart(self, keystore: KeyStore) -> None:
+        # only for CLASSIC
+        self._checkState(ConnectionState.CONNECTED)
+
+        self._logger.info("SCLASSIC tarting unencrypted connect")
 
         await self._activityLock.acquire()
         try:
             # Initiate communication with device
+
+            services = self._gattClient.services
+            # try to learn. Only 1 returned in my CLASSIC grade network, we see 3 Characeristics in sniffer EBR
+            for s in services:
+                self._logger.debug(f"service: {s}") 
+            # Result: service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+            # matches expected _constants.CASA_UUID. Try to connect...
+            
             firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID) # also correct for Classic
             self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
             # test2 Got b'9b8ae399081d1b5806a24d0500' firstResp[0]=0x155 firstResp[1]=0x138
@@ -157,124 +255,62 @@ class CasambiClient:
             # test5 Got b'236f2ba0486eb51a06a24d0500' firstResp[0]=0x35 firstResp[1]=Ox111
             # test6 Got b'7b78f2d6d62fce7308a24d0500' firstResp[0]=0x123 firstResp[1]=Ox120
             # test7 Service bytearray(b'\xa9\xd1\xefI~f3\xd4\x06\xa2M\x05\x00') firstResp[0]=d169/10101001 firstResp[1]=d209
-            services = self._gattClient.services # try to learn EBR
-            for s in services:
-                self._logger.debug(f"service: {s}") 
-            # test3 services: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy <-- try to connect
-            # test5 services: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
-            # test6 services: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+
+            secondResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID2) # seen on Classic
+            self._logger.debug(f"Service {secondResp}")
+
+            thirdResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID3) # seen on Classic
+            self._logger.debug(f"Service {thirdResp}")
+
+##            self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
+##                ">BHH4s", firstResp, 2 # "BHH4s" = format string, 2 = offset # only guessing in format
+##            )
+##            self._logger.debug(
+##                f"Parsed Classic mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
+##            )
+            # Test9:  Parsed Classic mtu 185, unit 23513, flags 8844, nonce b'0306a24d'
+            # Test10: Parsed Classic mtu 248, unit 8119, flags 62415, nonce b'fe06a24d'
+             
+            # (Classic firstResp size is 13 hex bytes)
+            # struct.error: unpack_from requires a buffer of at least 23 bytes for unpacking
+            # 21 bytes at offset 2 (actual buffer size is 13)
+            # see: https://docs.python.org/3/library/struct.html
+                
+            #descr = self._gattClient.read_gatt_descriptor
+            #self._logger.debug(f"descriptor: {descr}")
+            # descriptor: <bound method BleakClient.read_gatt_descriptor of <BleakClient, EB6F92F7-3599-159F-9782-0398CE2AA4E5, <class 'bleak.backends.corebluetooth.client.BleakClientCoreBluetooth'>>>
 
             #characteristics = self._gattClient.characteristics # try to learn EBR, but .characteristics not available in Casambi
             #for c in characteristics:
             #    self._logger.debug(f"characteristics: {c}") 
                         
-            # Check type and protocol version
-            #if (self._networkType == NetworkType.EVOLUTION # TODO EBR
-            if not (firstResp[0] == 0x1 and firstResp[1] == 0xA) and (self._networkType == NetworkType.EVOLUTION):
-            #self._connectionState = ConnectionState.ERROR
-                #raise ProtocolError(
-                #    "Unexpected answer from device! Wrong device or protocol version?" # Yep
-                #)
-                pass # for testing Classic EBR
-
-            # Parse device info
-            if self._networkType == NetworkType.EVOLUTION: # TODO EBR
-                self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
-                    ">BHH16s", firstResp, 2 # "BHH16s" = format string, 2 = offset
-                )
-                self._logger.debug(
-                    f"Parsed Evolution mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
-                )
-            elif self._networkType == NetworkType.CLASSIC:
-                self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
-                    ">BHH4s", firstResp, 2 # "BHH4s" = format string, 2 = offset
-                )
-                self._logger.debug(
-                    f"Parsed Classic mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
-                )
-                # Test9:  Parsed Classic mtu 185, unit 23513, flags 8844, nonce b'0306a24d'
-                # Test10: Parsed Classic mtu 248, unit 8119, flags 62415, nonce b'fe06a24d'
-                 
-                # (Classic firstResp size is 13 hex bytes)
-                # struct.error: unpack_from requires a buffer of at least 23 bytes for unpacking
-                # 21 bytes at offset 2 (actual buffer size is 13)
-                # see: https://docs.python.org/3/library/struct.html
-
-            # Device will initiate key exchange, so listen for that
-            self._logger.debug("Starting notify")
-            await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.my_notification_handler) # DEBUG EBR
-            self._logger.debug("sleep notify")
-            await asyncio.sleep(5.0)
-            await self._gattClient.stop_notify(CASA_AUTH_CHAR_UUID)
-
-            #descr = self._gattClient.read_gatt_descriptor
-            #self._logger.debug(f"descriptor: {descr}")
-            # descriptor: <bound method BleakClient.read_gatt_descriptor of <BleakClient, EB6F92F7-3599-159F-9782-0398CE2AA4E5, <class 'bleak.backends.corebluetooth.client.BleakClientCoreBluetooth'>>>
-
-            
-            await self._gattClient.start_notify(
-                CASA_AUTH_CHAR_UUID, self._queueCallback
-            )
+            self._logger.debug("Conncet follow up - write_gatt_char")
+            #await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, keyExchResponse)
         finally:
             self._activityLock.release()
 
-        if self._networkType == NetworkType.EVOLUTION:
-            # Wait for Evolution key exchange, will get notified by _exchNotifyCallback
-            self._logger.debug("Key exchange Evolution - _notifySignal")
-            await self._notifySignal.wait() # <<<<<<<<<<<<<<<<<<<<< Classic blocks here, BLE4 without Secure Connect
-            # it seems no (valid format?) key exchange on Classic networks?
-            self._logger.debug("Key exchange - lock")
-            await self._activityLock.acquire()
-            try:
-                self._logger.debug("Key exchange - clearing signal")
-                self._notifySignal.clear()
-                if self._connectionState == ConnectionState.ERROR:
-                    raise ProtocolError("Invalid key exchange initiation.")
+        # Wait for success response from _exchNotifyCallback
+        self._logger.debug("waiting for _exchNotifyCallback")
+        await self._notifySignal.wait()
 
-                # Respond to key exchange
-                pubNums = self._pubKey.public_numbers()
-                keyExchResponse = struct.pack(
-                    ">B32s32sB",
-                    0x2,
-                    pubNums.x.to_bytes(32, byteorder="little", signed=False),
-                    pubNums.y.to_bytes(32, byteorder="little", signed=False),
-                    0x1,
-                )
-                self._logger.debug("Key exchange - write_gatt_char")
-                await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, keyExchResponse)
-            finally:
-                self._activityLock.release()
+        await self._activityLock.acquire()
+        try:
+            self._notifySignal.clear()
+            if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
+                raise ProtocolError("Failed to follow up!")
+            else:
+                self._logger.info("Classic connect successful")
+            # Skip auth because CLASSIC network doesn't use encryption.
 
-            # Wait for success response from _exchNotifyCallback
-            self._logger.debug("waiting for _exchNotifyCallback")
-            await self._notifySignal.wait() # <<<<<<<<<<<<<<<<<<<<< Classic blocks here
-            # it seems there's no key exchange on Classic networks?
-            await self._activityLock.acquire()
-            try:
-                self._notifySignal.clear()
-                if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
-                    raise ProtocolError("Failed to negotiate key!")
-                else:
-                    self._logger.info("Key exchange successful")
-                    self._encryptor = Encryptor(self._transportKey)
+        finally:
+            self._activityLock.release()
 
-                    # Skip auth if the network doesn't use a key.
-                    if keystore.getKey():
-                        self._connectionState = ConnectionState.KEY_EXCHANGED
-                    else:
-                        self._connectionState = ConnectionState.AUTHENTICATED
-            finally:
-                self._activityLock.release()
-        elif self._networkType == NetworkType.CLASSIC:
-            # uses simple connect() Just Works, STK = 0
-            self._logger.info("Classic - skipped Key Exchange")
-            #self._connectionState = ConnectionState.KEY_EXCHANGED # AUTHENTICATED TODO EBR
-            self._connectionState = ConnectionState.AUTHENTICATED
-            #self._transportKey = bytearray() # TODO
-            #self._encryptor = Encryptor(self._transportKey)
-
-    def setNetworkType(self, NetworkType: type) -> None:
-        self._networkType = type
+        # CLASSIC uses simple connect() Just Works, STK = 0
+        self._connectionState = ConnectionState.UNENCRYPTED # TODO EBR
+            
+ 
+    def setNetworkGrade(self, NetworkGrade: type) -> None:
+        self._networkGrade = type
 
     # An easy notify function, just print the received data DEBUG EBR
     def my_notification_handler(sender, data):
@@ -359,7 +395,7 @@ class CasambiClient:
             self._notifySignal.set()
 
     async def authenticate(self, keystore: KeyStore) -> None:
-        if self._networkType == NetworkType.CLASSIC: # no keys in Classic Network # TODO remove hack EBR
+        if self._networkGrade == NetworkGrade.CLASSIC: # no keys in Classic Network # TODO remove hack EBR
             self._connectionState = ConnectionState.AUTHENTICATED
         else:
             self._checkState(ConnectionState.KEY_EXCHANGED)
@@ -443,7 +479,7 @@ class CasambiClient:
 
     async def send(self, packet: bytes) -> None:
         
-        if self._networkType == NetworkType.EVOLUTION:
+        if self._networkGrade == NetworkGrade.EVOLUTION:
 
             self._checkState(ConnectionState.AUTHENTICATED)
 
@@ -465,7 +501,7 @@ class CasambiClient:
             finally:
                 self._activityLock.release()
                 
-        elif self._networkType == NetworkType.CLASSIC:
+        elif self._networkGrade == NetworkGrade.CLASSIC:
             self._checkState(ConnectionState.CONNECTED) # TODO EBR fix before for Classic
             await self._activityLock.acquire()
             try:

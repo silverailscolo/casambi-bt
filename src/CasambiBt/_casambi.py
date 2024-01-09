@@ -9,7 +9,7 @@ from httpx import AsyncClient, RequestError
 
 from ._client import CasambiClient, ConnectionState, IncomingPacketType
 from ._network import Network
-from ._constants import NetworkType
+from ._constants import NetworkGrade
 from ._operation import OpCode, OperationsContext
 from ._unit import Group, Scene, Unit, UnitState
 from .errors import ConnectionStateError, ProtocolError
@@ -31,7 +31,7 @@ class Casambi:
         self._opContext = OperationsContext()
         self._ownHttpClient = httpClient is None
         self._httpClient = httpClient
-        self._networkType = NetworkType.EVOLUTION # if it is a 5.0 BLE network
+        self._networkGrade = NetworkGrade.EVOLUTION # if it is a 5.0 BLE network
         # TODO this is updated to CLASSIC upon discovery as in demo EBR
 
     def _checkNetwork(self) -> None:
@@ -110,7 +110,7 @@ class Casambi:
         if isinstance(addr_or_device, tuple): # used for CLASSIC networks
                 uuid = addr_or_device[1]
                 addr_or_device = addr_or_device[0]
-                self._networkType = NetworkType.CLASSIC
+                self._networkGrade = NetworkGrade.CLASSIC
                 self._logger.debug(f"CLASSIC uuid = {uuid}")
                 
         if isinstance(addr_or_device, BLEDevice):
@@ -128,13 +128,13 @@ class Casambi:
         self._casaClient = CasambiClient(
             addr_or_device, self._dataCallback, self._disconnect_callback # same callback for CLASSIC Check EBR TODO?
         )
-        self._casaClient.setNetworkType(self._networkType)
+        self._casaClient.setNetworkGrade(self._networkGrade)
 
         if not self._httpClient:
             self._httpClient = AsyncClient()
 
         # Retrieve network information
-        if (self._networkType == NetworkType.CLASSIC):
+        if (self._networkGrade == NetworkGrade.CLASSIC):
             uuid = uuid.replace(":", "").lower()
         else:
             uuid = addr.replace(":", "").lower()
@@ -142,7 +142,7 @@ class Casambi:
         self._logger.debug(f"Look up info for uuid {uuid}")
         
         self._casaNetwork = Network(uuid, self._httpClient) # create new Network instance from uuid
-        self._casaNetwork.setNetworkType(self._networkType) # TODO include as param in __init__ ?
+        self._casaNetwork.setNetworkGrade(self._networkGrade) # TODO include as param in __init__ ?
         
         try:
             await self._casaNetwork.logIn(password, forceOffline) # logs in on api.casambi.com
@@ -161,13 +161,13 @@ class Casambi:
         """Initiate the bluetooth connection to a device."""
         self._casaClient = cast(CasambiClient, self._casaClient)
         await self._casaClient.connect() # connects to local Casambi BT client
-        try:
-            await self._casaClient.exchangeKey(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
-            if self._networkType == NetworkType.EVOLUTION:
+        if self._networkGrade == NetworkGrade.EVOLUTION:
+            try:
+                await self._casaClient.exchangeKey(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
                 await self._casaClient.authenticate(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
-        except ProtocolError as e:
-            await self._casaClient.disconnect()
-            raise e
+            except ProtocolError as e:
+                await self._casaClient.disconnect()
+                raise e
 
     async def setUnitState(self, target: Unit, state: UnitState) -> None:
         """Set the state of one unit directly.
@@ -309,17 +309,19 @@ class Casambi:
             assert target.sceneId <= 0xFF
             targetCode = (target.sceneId << 8) | 0x04
         elif target is not None:
-            raise TypeError(f"Unkown target type {type(target)}")
+            raise TypeError(f"Unknown target type {type(target)}")
 
         self._logger.debug(
             f"Sending operation {opcode.name} with payload {b2a(state)} for {targetCode:x}"
         )
 
-        if self._networkType == NetworkType.CLASSIC:
+        if self._networkGrade == NetworkGrade.CLASSIC:
             opPkt = self._opContext.prepareOperationClassic(opcode, targetCode, state)
-        elif self._networkType == NetworkType.EVOLUTION:
+        elif self._networkGrade == NetworkGrade.EVOLUTION:
             opPkt = self._opContext.prepareOperation(opcode, targetCode, state)
-        
+        else:
+            raise TypeError(f"Unknown network grade {self._networkGrade}")
+            
         try:
             await self._casaClient.send(opPkt)
         except ConnectionStateError as exc:
