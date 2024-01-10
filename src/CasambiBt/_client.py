@@ -30,7 +30,7 @@ class ConnectionState(IntEnum):
     CONNECTED = 1
     KEY_EXCHANGED = 2
     AUTHENTICATED = 3
-    UNENCRYPTED = 4  # for CLASSIC
+    CONNECTED_UNENCRYPTED = 4  # for CLASSIC TODO required?
     ERROR = 99
 
 
@@ -70,7 +70,7 @@ class CasambiClient:
         self._outPacketCount = 0
         self._inPacketCount = 0
 
-        self._networkGrade = NetworkGrade.EVOLUTION  # or .CLASSIC # todo use some attribute eg. uuid != addr? EBR
+        self._networkGrade = NetworkGrade.EVOLUTION  # or .CLASSIC # todo use json grade attribute?
 
         self._callbackQueue: asyncio.Queue[tuple[BleakGATTCharacteristic, bytes]]
         self._callbackTask: Optional[asyncio.Task[None]] = None
@@ -94,7 +94,7 @@ class CasambiClient:
     async def connect(self) -> None:
         self._checkState(ConnectionState.NONE)
 
-        self._logger.info(f"Client connecting to {self.address}")
+        self._logger.debug(f"Client connecting to {self.address}")
 
         # Reset packet counters
         self._outPacketCount = 2
@@ -115,7 +115,6 @@ class CasambiClient:
             self._logger.error("Failed to discover client.")
             raise NetworkNotFoundError
 
-        # if (self._networkGrade == NetworkGrade.EVOLUTION):  # TODO check EBR
         try:
             # If we are already connected to the device, the key exchange will fail.
             await close_stale_connections(device)
@@ -128,48 +127,47 @@ class CasambiClient:
             self._logger.error("Failed to find client.", exc_info=True)
             raise NetworkNotFoundError from e
         except BleakError as e:
-            self._logger.error("Failed to connect.", exc_info=True) # TODO foutmelding op Classic network EBR
+            self._logger.error("Failed to connect.", exc_info=True) # error on Classic network
             raise BluetoothError(e.args) from e
         except Exception as e:
             self._logger.error("Unknown connection failure.", exc_info=True)
             raise BluetoothError from e
 
-        self._logger.info(f"Connected to {self.address}")
+        self._logger.debug(f"Connected to {self.address}")
         self._connectionState = ConnectionState.CONNECTED
 
     def _on_disconnect(self, client: BleakClient) -> None:
         if self._connectionState != ConnectionState.NONE:
-            self._logger.info(f"Received disconnect callback from {self.address}")
-        if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.UNENCRYPTED:
-            # for CLASSIC:UNENCRYPTED
+            self._logger.debug(f"Received disconnect callback from {self.address}")
+        if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.CONNECTED_UNENCRYPTED:
+            # for CLASSIC: CONNECTED_UNENCRYPTED
             self._disconnectedCallback()
         self._connectionState = ConnectionState.NONE
 
     async def exchangeKey(self, keystore: KeyStore) -> None:
-        # not used in CLASSIC
+        # only for EVOLUTION, not working in CLASSIC
         self._checkState(ConnectionState.CONNECTED)
 
-        self._logger.info("Starting secure key exchange...")
+        self._logger.debug("Starting secure key exchange...")
 
         await self._activityLock.acquire()
         try:
             # Initiate communication with device            
             firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
-            # self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
                         
             # Check type and protocol version
             if not (firstResp[0] == 0x1 and firstResp[1] == 0xA):
                 self._connectionState = ConnectionState.ERROR
                 raise ProtocolError(
-                    "Unexpected answer from device! Wrong device or protocol version?"
+                    "Unexpected answer from device! Wrong device or non-Evolution network protocol?"
                 )
 
             # Parse device info
-            self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
+            self._mtu, self._unitId, self._flags, self._nonce = struct.unpack_from(
                 ">BHH16s", firstResp, 2 # "BHH16s" = format string, 2 = offset
             )
             self._logger.debug(
-                f"Parsed Evolution mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
+                f"Parsed Evolution mtu {self._mtu}, unit {self._unitId}, flags {self._flags}, nonce {b2a(self._nonce)}"
             )
 
             # Device will initiate key exchange, so listen for that
@@ -187,7 +185,7 @@ class CasambiClient:
 
         # Wait for EVOLUTION key exchange, will get notified by _exchNotifyCallback
         self._logger.debug("Key exchange Evolution - _notifySignal")
-        await self._notifySignal.wait() # Classic blocks here, BLE4.0 without Secure Connect
+        await self._notifySignal.wait()  # Classic blocked here. BLE4.0 without Secure Connect
         # it seems no (valid format?) key exchange on Classic networks?
         self._logger.debug("Key exchange - lock")
         await self._activityLock.acquire()
@@ -213,15 +211,15 @@ class CasambiClient:
 
         # Wait for success response from _exchNotifyCallback
         self._logger.debug("waiting for _exchNotifyCallback")
-        await self._notifySignal.wait() # Classic blocks here
-        # it seems there's no key exchange on Classic networks?
+        await self._notifySignal.wait()  # Classic blocked here
+        # it seems there's no security key exchange on Classic networks
         await self._activityLock.acquire()
         try:
             self._notifySignal.clear()
             if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
                 raise ProtocolError("Failed to negotiate key!")
             else:
-                self._logger.info("Key exchange successful")
+                self._logger.debug("Key exchange successful")
                 self._encryptor = Encryptor(self._transportKey)
 
                 # Skip auth if the network doesn't use a key.
@@ -236,7 +234,7 @@ class CasambiClient:
         # only for CLASSIC
         self._checkState(ConnectionState.CONNECTED)
 
-        self._logger.info("CLASSIC starting unencrypted connect")
+        self._logger.debug("CLASSIC starting unencrypted connect")
 
         await self._activityLock.acquire()
         try:
@@ -250,25 +248,108 @@ class CasambiClient:
             # matches expected _constants.CASA_UUID. Try to connect...
             
             firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID) # also correct for Classic
-            self._logger.debug(f"Service {firstResp} firstResp[0]=d{firstResp[0]} firstResp[1]=d{firstResp[1]}")
-            # test2 Got b'9b8ae399081d1b5806a24d0500' firstResp[0]=0x155 firstResp[1]=0x138
-            # test3 Got b'dac9cfd20e5b5ab306a24d0500' firstResp[0]=0x218 firstResp[1]=Ox201
-            # test4 Got b'1ab4c23dea96762908a24d0500' firstResp[0]=0x026 firstResp[1]=Ox180
-            # test5 Got b'236f2ba0486eb51a06a24d0500' firstResp[0]=0x35 firstResp[1]=Ox111
-            # test6 Got b'7b78f2d6d62fce7308a24d0500' firstResp[0]=0x123 firstResp[1]=Ox120
-            # test7 Service bytearray(b'\xa9\xd1\xefI~f3\xd4\x06\xa2M\x05\x00') firstResp[0]=d169/10101001 firstResp[1]=d209
+            self._logger.debug(f"Response: {firstResp} elem[0]={firstResp[0]}")
+            if len(firstResp) > 1:
+                self._logger.debug(f"- elem[1]={firstResp[1]}")
+            if len(firstResp) > 2:
+                self._logger.debug(f"- elem[2]={firstResp[2]}")
+            if len(firstResp) > 3:
+                self._logger.debug(f"- elem[3]={firstResp[3]}")
+            if len(firstResp) > 4:
+                self._logger.debug(f"- elem[4]={firstResp[4]}")
+            if len(firstResp) > 5:
+                self._logger.debug(f"- elem[5]={firstResp[5]}")
+            if len(firstResp) > 6:
+                self._logger.debug(f"- elem[6]={firstResp[6]}")
+            if len(firstResp) > 7:
+                self._logger.debug(f"- elem[7]={firstResp[7]}")
+            if len(firstResp) > 8:
+                self._logger.debug(f"- elem[8]={firstResp[8]}")
+            if len(firstResp) > 9:
+                self._logger.debug(f"- elem[9]={firstResp[9]}")
+            # test2 Got b'9b8ae399081d1b58 06 a24d 05 00' elem[0]=0x155 elem[1]=0x138
+            # test3 Got b'dac9cfd20e5b5ab3 06 a24d 05 00' elem[0]=0x218 elem[1]=Ox201
+            # test4 Got b'1ab4c23dea967629 08 a24d 05 00' elem[0]=0x026 elem[1]=Ox180
+            # test5 Got b'236f2ba0486eb51a 06 a24d 05 00' elem[0]=0x35 elem[1]=Ox111
+            # test6 Got b'7b78f2d6d62fce73 08 a24d 05 00' elem[0]=0x123 elem[1]=Ox120
+##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+##            Service bytearray(b'\x19\xf1\xe8\xa9\xa7\xbe[A\x08\xa2M\x05\x00') elem[0]=25
+##            - elem[1]=241
+##            - elem[2]=232
+##            - elem[3]=169
+##            - elem[4]=167
+##            Service bytearray(b'\x00') elem[0]=0
 
+##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+##            Service bytearray(b'\x83\x0c\xfcSL\x82*=\x08\xa2M\x05\x00') elem[0]=131
+##            - elem[1]=12
+##            - elem[2]=252
+##            - elem[3]=83
+##            - elem[4]=76
+##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
+##            Service bytearray(b'\x00') elem[0]=0
+
+
+##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+##            Response: bytearray(b'\xda\xb8\xd8\x1d_\xc8\x16\xae\x08\xa2M\x05\x00') elem[0]=218
+##            - elem[1]=184
+##            - elem[2]=216
+##            - elem[3]=29
+##            - elem[4]=95
+##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
+##            Response: bytearray(b'\x00') elem[0]=0
+
+##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+##            Response: bytearray(b'\xec\x0fRll\x19\xdeI\x08\xa2M\x05\x00') elem[0]=236
+##            - elem[1]=15
+##            - elem[2]=82
+##            - elem[3]=108
+##            - elem[4]=108
+##            - elem[2]=25
+##            - elem[3]=222
+##            - elem[4]=73
+##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
+##            Response: bytearray(b'\x00') elem[0]=0
+
+##            Response: bytearray(b'"\xa8\x90Y\xdb\xf5\x95X\x08\xa2M\x05\x00')
+##            - elem[0]=34 0x22
+##            - elem[1]=168 0xA8
+##            - elem[2]=144 0x90
+##            - elem[3]=89 0x59 ?
+##            - elem[4]=219 0xDB
+##            - elem[5]=245
+##            - elem[6]=149
+##            - elem[7]=88
+##            - elem[8]=8 0x08
+##            - elem[9]=162 0xA2
+##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
+##            Response: bytearray(b'\x00') elem[0]=0
+
+            self._logger.debug("service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)") 
             secondResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID2) # seen on Classic
-            self._logger.debug(f"Service {secondResp}")
+            self._logger.debug(f"Response: {secondResp} elem[0]={secondResp[0]}")
+            if len(secondResp) > 1:
+                self._logger.debug(f"- elem[1]={secondResp[1]}")
+            if len(secondResp) > 2:
+                self._logger.debug(f"- elem[2]={secondResp[2]}")
+            if len(secondResp) > 3:
+                self._logger.debug(f"- elem[1]={secondResp[3]}")
+            if len(secondResp) > 4:
+                self._logger.debug(f"- elem[2]={secondResp[4]}")
+                
+##            thirdResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID3) # seen on Classic
+##            self._logger.debug(f"Service {thirdResp} elem[0]={thirdResp[0]}")
+##            if len(thirdResp) > 1:
+##                self._logger.debug(f"- elem[1]={thirdResp[1]}")
+##            if len(thirdResp) > 2:
+##                self._logger.debug(f"- elem[2]={thirdResp[2]}")
 
-            thirdResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID3) # seen on Classic
-            self._logger.debug(f"Service {thirdResp}")
-
-##            self._mtu, self._unit, self._flags, self._nonce = struct.unpack_from(
-##                ">BHH4s", firstResp, 2 # "BHH4s" = format string, 2 = offset # only guessing in format
+##            self._mtu, self._unitId, self._flags, self._nonce = struct.unpack_from(
+##                ">BHH4s", firstResp, 2
+                  # "BHH4s" = format string, 2 = offset # only guessing in format
 ##            )
 ##            self._logger.debug(
-##                f"Parsed Classic mtu {self._mtu}, unit {self._unit}, flags {self._flags}, nonce {b2a(self._nonce)}"
+##                f"Parsed Classic mtu {self._mtu}, unit {self._unitId}, flags {self._flags}, nonce {b2a(self._nonce)}"
 ##            )
             # Test9:  Parsed Classic mtu 185, unit 23513, flags 8844, nonce b'0306a24d'
             # Test10: Parsed Classic mtu 248, unit 8119, flags 62415, nonce b'fe06a24d'
@@ -286,7 +367,7 @@ class CasambiClient:
             #for c in characteristics:
             #    self._logger.debug(f"characteristics: {c}") 
                         
-            self._logger.debug("Conncet follow up - write_gatt_char")
+            self._logger.debug("Connect followup - write_gatt_char")
             #await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, keyExchResponse)
         finally:
             self._activityLock.release()
@@ -301,24 +382,24 @@ class CasambiClient:
             if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
                 raise ProtocolError("Failed to follow up!")
             else:
-                self._logger.info("Classic connect successful")
+                self._logger.debug("Classic connect successful")
             # Skip auth because CLASSIC network doesn't use encryption.
 
         finally:
             self._activityLock.release()
 
-        # CLASSIC uses simple connect() Just Works, STK = 0
-        self._connectionState = ConnectionState.UNENCRYPTED # TODO EBR
+        # CLASSIC uses simple connect() or Just Works, STK = 0 ?
+        self._connectionState = ConnectionState.CONNECTED_UNENCRYPTED  # TODO EBR
  
     def setNetworkGrade(self, grade: NetworkGrade) -> None:
         self._networkGrade = grade
 
     # An easy notify function, just print the received data DEBUG EBR
     def my_notification_handler(sender, data):
-        sender._logger.info("_notify" + (', '.join('{:02x}'.format(x) for x in data)))
+        sender._logger.debug("_notify" + (', '.join('{:02x}'.format(x) for x in data)))
     
     def _queueCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
-        self._logger.info("Starting _queueCallback")
+        self._logger.debug("Starting _queueCallback")
         self._callbackQueue.put_nowait((handle, data))
 
     async def _processCallbacks(self) -> None:
@@ -348,13 +429,13 @@ class CasambiClient:
             )
 
     def _exchNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
-        self._logger.info(f"_exchNotifyCallback data: {b2a(data)}.")
+        self._logger.debug(f"_exchNotifyCallback data: {b2a(data)}.")
         if data[0] == 0x2:
             # Parse device pubkey
             x, y = struct.unpack_from("<32s32s", data, 1)
             x = int.from_bytes(x, byteorder="little")
             y = int.from_bytes(y, byteorder="little")
-            self._logger.debug(f"Got public key {x}, {y}")
+            self._logger.debug(f"Got public key {x}, {y}")  # looks OK in CLASSIC? EBR
 
             self._devicePubKey = ec.EllipticCurvePublicNumbers(
                 x, y, ec.SECP256R1()
@@ -401,11 +482,11 @@ class CasambiClient:
         else:
             self._checkState(ConnectionState.KEY_EXCHANGED)
 
-        self._logger.info("Authenticating channel...")
+        self._logger.debug("Authenticating channel...")
         key = keystore.getKey()  # Session key, returns key with the highest role (0-3)
 
         if not key:
-            self._logger.info("No key in keystore. Skipping auth.")
+            self._logger.debug("No key in keystore. Skipping auth.")
             # The channel already has to be set to authenticated by exchangeKey.
             # This needs to be done because a non-handshake packet could be sent right after acking the key exch,
             # and we don't want that packet to end up in _authNotifyCallback.
@@ -440,12 +521,12 @@ class CasambiClient:
                 raise ProtocolError("Failed to verify authentication response.")
             else:
                 self._connectionState = ConnectionState.AUTHENTICATED
-                self._logger.info("Authentication successful")
+                self._logger.debug("Authentication successful")
         finally:
             self._activityLock.release()
 
     def _authNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
-        self._logger.info("Processing authentication response...")
+        self._logger.debug("Processing authentication response...")
 
         # TODO: Verify counter
         self._inPacketCount += 1
@@ -473,10 +554,10 @@ class CasambiClient:
             else:
                 raise e
 
-    def _getNonce(self, id: Union[int, bytes]) -> bytes:
-        if isinstance(id, int):
-            id = id.to_bytes(4, "little")
-        return self._nonce[:4] + id + self._nonce[8:]
+    def _getNonce(self, _id: Union[int, bytes]) -> bytes:
+        if isinstance(_id, int):
+            _id = _id.to_bytes(4, "little")
+        return self._nonce[:4] + _id + self._nonce[8:]
 
     async def send(self, packet: bytes) -> None:
         
@@ -542,7 +623,7 @@ class CasambiClient:
         try:
             data = self._encryptor.decryptAndVerify(data, data[:4] + self._nonce[4:])
         except InvalidSignature:
-            # We only drop packets with invalid signature here instead of going into an error state
+            # We simply drop packets with invalid signature here instead of going into an error state
             self._logger.error(f"Invalid signature for packet {b2a(data)}!")
             return
 
@@ -561,7 +642,7 @@ class CasambiClient:
             self._logger.info(f"Packet type {packetType} not implemented. Ignoring!")
 
     def _parseUnitStates(self, data: bytes) -> None:
-        self._logger.info("Parsing incoming unit states...")
+        self._logger.debug("Parsing incoming unit states...")
         self._logger.debug(f"Incoming unit state: {b2a(data)}")
 
         pos = 0
@@ -605,7 +686,7 @@ class CasambiClient:
             )
 
     async def disconnect(self) -> None:
-        self._logger.info("Disconnecting...")
+        self._logger.debug("Disconnecting...")
 
         if self._callbackTask:
             self._callbackTask.cancel()
@@ -619,4 +700,4 @@ class CasambiClient:
                 self._logger.error("Failed to disconnect BleakClient.", exc_info=True)
 
         self._connectionState = ConnectionState.NONE
-        self._logger.info("Disconnected.")
+        self._logger.debug("Disconnected.")

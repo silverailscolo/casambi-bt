@@ -27,7 +27,7 @@ class Encryptor:
         self._logger = logging.getLogger(__name__)
 
     def encryptThenMac(self, packet: bytes, nonce: bytes, headerLen: int = 4) -> bytes:
-        self._logger.info(
+        self._logger.debug(
             f"Encrypting packet: {b2a(packet)} of len {len(packet)} with nonce {b2a(nonce)}"
         )
         packet = bytes(packet)
@@ -44,7 +44,7 @@ class Encryptor:
     def decryptAndVerify(
         self, packet: bytes, nonce: bytes, headerLen: int = 4
     ) -> bytes:
-        self._logger.info(
+        self._logger.debug(
             f"Decrypting packet: {b2a(packet)} of len {len(packet)} with nonce {b2a(nonce)}"
         )
         packet = bytes(packet)

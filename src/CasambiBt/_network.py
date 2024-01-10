@@ -31,7 +31,7 @@ class _NetworkSession:
     role: int = 3  # TODO: Support other role types?
 
     def expired(self) -> bool:
-        return datetime.now(timezone.utc) > self.expires
+        return datetime.now() > self.expires
 
 
 class Network:
@@ -52,7 +52,7 @@ class Network:
 
         self._id: Optional[str] = None
         self._uuid = uuid
-        self._logger.info(f"UUID = {self._uuid}")
+        self._logger.debug(f"UUID = {self._uuid}")
         self._httpClient = httpClient
 
         self._cachePath = getCacheDir(uuid)
@@ -67,19 +67,19 @@ class Network:
             self._loadTypeCache()
 
     def _loadSession(self) -> None:
-        self._logger.info("Loading session...")
+        self._logger.debug("Loading session...")
         self._session = pickle.load(self._sessionPath.open("rb"))
 
     def _saveSession(self) -> None:
-        self._logger.info("Saving session...")
+        self._logger.debug("Saving session...")
         pickle.dump(self._session, self._sessionPath.open("wb"))
 
     def _loadTypeCache(self) -> None:
-        self._logger.info("Loading unit type cache...")
+        self._logger.debug("Loading unit type cache...")
         self._unitTypes = pickle.load(self._typeCachePath.open("rb"))
 
     def _saveTypeCache(self) -> None:
-        self._logger.info("Saving type cache...")
+        self._logger.debug("Saving type cache...")
         pickle.dump(self._unitTypes, self._typeCachePath.open("wb"))
 
     def setNetworkGrade(self, _networkGrade: type) -> None:
@@ -92,7 +92,7 @@ class Network:
         :raises RequestError: request failed
         :raises NetworkOnlineUpdateNeededError: no network id found, either in cache or from casambi.com
         """
-        self._logger.info(f"Getting network id for uuid {self._uuid}...")
+        self._logger.debug(f"Getting network id for uuid {self._uuid}...")
 
         networkCacheFile = self._cachePath / "networkid"
         gradeCacheFile = self._cachePath / "networkgrade"
@@ -104,7 +104,6 @@ class Network:
             self._grade = gradeCacheFile.read_text()
             
         if forceOffline:
-            self._logger.info("forcedOffline network line 101")
             if not self._id:
                 raise NetworkOnlineUpdateNeededError("Network isn't cached.")
 
@@ -124,7 +123,7 @@ class Network:
                     )
                     # return
 
-        self._logger.info(f"NetworkId = {self._id}. Result from api: {res}")
+        self._logger.debug(f"NetworkId = {self._id}. Result from api: {res}")
         
         if res.status_code == httpx.codes.NOT_FOUND:
             raise NetworkNotFoundError(
@@ -138,13 +137,13 @@ class Network:
         if not forceOffline:  # also works for CLASSIC
             new_id = cast(str, res.json()["id"])
             if self._id != new_id:
-                self._logger.info(f"Network id changed from {self._id} to {new_id} using api.casambi.com.")
+                self._logger.debug(f"Network id changed from {self._id} to {new_id} using api.casambi.com.")
                 networkCacheFile.write_text(new_id)
                 self._id = new_id
             new_grade = cast(str, res.json()["grade"])
             if self._networkGrade != new_grade:
                 self._networkGrade = new_grade
-        self._logger.info(f"Got network id {self._id}, grade {self._networkGrade}.")
+        self._logger.debug(f"Got network id {self._id}, grade {self._networkGrade}.")
 
     def authenticated(self) -> bool:
         if not self._session:
@@ -165,7 +164,7 @@ class Network:
         if self.authenticated() or forceOffline:
             return
 
-        self._logger.info("Logging in to api.casambi.com with id {self._id}")
+        self._logger.debug("Logging in to api.casambi.com with id {self._id}")
         getSessionUrl = f"https://api.casambi.com/network/{self._id}/session"
 
         res = await self._httpClient.post(
@@ -179,13 +178,13 @@ class Network:
             )
             self._session = _NetworkSession(**sessionJson)
             # stores session info returned from api.casambi.com for later use
-            self._logger.info("Login successful.")
+            self._logger.debug("Login successful.")
             self._saveSession()
         else:
             raise AuthenticationError(f"Login failed: {res.status_code}\n{res.text}")
 
     async def update(self, forceOffline: bool = False) -> None:
-        self._logger.info("Updating network...")
+        self._logger.debug("Updating network...")
         if not self.authenticated() and not forceOffline:
             raise AuthenticationError("Not authenticated!")
 
@@ -197,7 +196,7 @@ class Network:
         if cachedNetworkPath.exists():
             network = json.loads(cachedNetworkPath.read_bytes())
             self._networkRevision = network["network"]["revision"]
-            self._logger.info(
+            self._logger.debug(
                 f"Loaded cached network. Revision: {self._networkRevision}"
             )
         else:
@@ -231,7 +230,7 @@ class Network:
                     self._networkRevision = updateResult["network"]["revision"]
                     cachedNetworkPath.write_bytes(res.content)
                     network = updateResult
-                    self._logger.info(
+                    self._logger.debug(
                         f"Fetched updated network with revision {self._networkRevision}"
                     )
             except RequestError as err:
@@ -315,15 +314,15 @@ class Network:
 
         self._saveTypeCache()
 
-        self._logger.info("Network updated.")
+        self._logger.debug("Network updated.")
 
     async def _fetchUnitInfo(self, _id: int) -> UnitType:
-        self._logger.info(f"Fetching unit type for id {_id}...")
+        self._logger.debug(f"Fetching unit type for id {_id}...")
 
         # Check whether unit type is already cached
         cachedType = self._unitTypes.get(_id)
         if cachedType:
-            self._logger.info("Using cached type.")
+            self._logger.debug("Using cached type.")
             return cachedType
 
         getUnitInfoUrl = f"https://api.casambi.com/fixture/{_id}"
@@ -372,7 +371,7 @@ class Network:
         # Cache unit type
         self._unitTypes[unitTypeObj.id] = unitTypeObj
 
-        self._logger.info("Successfully fetched unit type.")
+        self._logger.debug("Successfully fetched unit type.")
         return unitTypeObj
 
     async def disconnect(self) -> None:

@@ -124,10 +124,10 @@ class Casambi:
                 addr_or_device = ":".join(["".join(p) for p in pairwise(addr)][::2])
             addr = addr_or_device
 
-        self._logger.info(f"Trying to connect to Casambi BLE network address {addr}, uuid {uuid}")
+        self._logger.debug(f"Trying to connect to Casambi BLE network address {addr}, uuid {uuid}")
 
         self._casaClient = CasambiClient(
-            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for CLASSIC Check EBR TODO?
+            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for CLASSIC Check EBR TODO
         )
         self._casaClient.setNetworkGrade(self._networkGrade)
 
@@ -162,13 +162,15 @@ class Casambi:
         """Initiate the bluetooth connection to a device."""
         self._casaClient = cast(CasambiClient, self._casaClient)
         await self._casaClient.connect() # connects to local Casambi BT client
-        if self._networkGrade == NetworkGrade.EVOLUTION:
-            try:
+        try:
+            if self._networkGrade == NetworkGrade.EVOLUTION:
                 await self._casaClient.exchangeKey(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
                 await self._casaClient.authenticate(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
-            except ProtocolError as e:
-                await self._casaClient.disconnect()
-                raise e
+            else:  # CLASSIC
+                await self._casaClient.classicStart(self._casaNetwork.getKeyStore())  # type: ignore[union-attr]
+        except ProtocolError as e:
+            await self._casaClient.disconnect()
+            raise e
 
     async def setUnitState(self, target: Unit, state: UnitState) -> None:
         """Set the state of one unit directly.
@@ -327,7 +329,7 @@ class Casambi:
             await self._casaClient.send(opPkt)
         except ConnectionStateError as exc:
             if exc.got == ConnectionState.NONE:
-                self._logger.info("Trying to reconnect broken connection once.")
+                self._logger.debug("Trying to reconnect broken connection once.")
                 await self._connectClient()
                 await self._casaClient.send(opPkt)
             else:
@@ -336,7 +338,7 @@ class Casambi:
     def _dataCallback(
         self, packetType: IncomingPacketType, data: dict[str, Any]
     ) -> None:
-        self._logger.info(f"Incoming data callback of type {packetType}")
+        self._logger.debug(f"Incoming data callback of type {packetType}")
         if packetType == IncomingPacketType.UnitState:
             self._logger.debug(
                 f"Handling changed state {b2a(data['state'])} for unit {data['id']}"
@@ -378,7 +380,7 @@ class Casambi:
         :param handler: The method to call when a new unit state is received.
         """
         self._unitChangedCallbacks.append(handler)
-        self._logger.info(f"Registered unit changed handler {handler}")
+        self._logger.debug(f"Registered unit changed handler {handler}")
 
     def unregisterUnitChangedHandler(self, handler: Callable[[Unit], None]) -> None:
         """Unregister an existing unit state change handler.
@@ -387,7 +389,7 @@ class Casambi:
         :raises ValueError: If the handler isn't registered.
         """
         self._unitChangedCallbacks.remove(handler)
-        self._logger.info(f"Removed unit changed handler {handler}")
+        self._logger.debug(f"Removed unit changed handler {handler}")
 
     def _disconnect_callback(self) -> None:
         # Mark all units as offline on disconnect.

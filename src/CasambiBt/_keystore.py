@@ -25,12 +25,12 @@ class KeyStore:
             self._load()
 
     def _load(self) -> None:
-        self._logger.info("Loading keys...")
+        self._logger.debug("Loading keys...")
         self._keys = pickle.load(self._storePath.open("rb"))
-        self._logger.info(f"Loaded {len(self._keys)} keys.")
+        self._logger.debug(f"Loaded {len(self._keys)} keys.")
 
     def _save(self) -> None:
-        self._logger.info("Saving keys...")
+        self._logger.debug("Saving keys...")
         pickle.dump(self._keys, (self._storePath.open("wb")))
 
     def addKey(self, _dict: dict) -> None:
@@ -41,7 +41,7 @@ class KeyStore:
             raise ValueError("id")
 
         if any(filter(lambda k: k.id == id, self._keys)):  # type: ignore
-            self._logger.info(f"Key with id {id} already exists. Skipping...")
+            self._logger.debug(f"Key with id {id} already exists. Skipping...")
             return
 
         if "type" not in _dict:
@@ -70,12 +70,12 @@ class KeyStore:
 
         keyObj = Key(id, type, role, name, key)
         self._keys.append(keyObj)
-        self._logger.info(f"Added key {name} with role {role} to store.")
+        self._logger.debug(f"Added key {name} with role {role} to store.")
         self._save()
 
     def clear(self, save: bool = False) -> None:
         self._keys.clear()
-        self._logger.info("Keystore cleared.")
+        self._logger.debug("Keystore cleared.")
         if save:
             self._save()
 

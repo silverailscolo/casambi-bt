@@ -33,14 +33,14 @@ class OperationsContext:
 
         return packet + payload
 
-    def prepareOperationClassic(self, op: OpCode, target: int, payload: bytes) -> bytes: # EBR shorter 
-        if len(payload) > 13:
+    def prepareOperationClassic(self, op: OpCode, target: int, payload: bytes) -> bytes:
+        if len(payload) > 13:  # EBR shorter payload in CLASSSIC?
             raise ValueError("Payload too long")
         # turn off: 0x00 invoegen voor laatste paar
         # turn on = lamp + helderheid
 
         flags = (self.lifetime & 15) << 11 | len(payload)
-        # & = AND bitwise, | = OR bitwise, << = shiftleft
+        # bitwise: & = AND, | = OR, << = shiftleft
 
         # Ensure that origin can't overflow.
         # TODO: Check that unsigned is actually correct here.
