@@ -41,6 +41,20 @@ class Encryptor:
 
         return packet
 
+    def cmac(self, packet: bytes) -> bytes:
+        # unencrypted for CLASSIC
+        self._logger.debug(
+            f"Adding MAC to packet: {b2a(packet)} of len {len(packet)}"
+        )
+        packet = bytes(packet)
+
+        cmacCipher = CMAC(self._aes) # contains LTK
+        cmacCipher.update(packet)
+        cmac = cmacCipher.finalize()
+        self._logger.debug(f"packet mac: {cmac}")
+
+        return cmac
+    
     def decryptAndVerify(
         self, packet: bytes, nonce: bytes, headerLen: int = 4
     ) -> bytes:
@@ -59,6 +73,22 @@ class Encryptor:
         cmacCipher.verify(packetMac)
         return plaintext
 
+    def verify(
+        self, packet: bytes, headerLen: int = 2
+    ) -> bytes:
+        # unencrypted for CLASSIC
+        self._logger.debug(
+            f"Verifying Classic packet: {b2a(packet)} of len {len(packet)}"
+        )
+        packet = bytes(packet)
+        plaintext, packetMac = packet[:headerLen + 8], packet[headerLen:headerLen + 8]
+
+        self._logger.debug(f"Payload: {b2a(plaintext)}")
+
+        cmacCipher = CMAC(self._aes)
+        cmacCipher.verify(packetMac)
+        return plaintext
+    
     def _encryptInternal(self, packet: bytes, nonce: bytes) -> bytes:
         if len(nonce) != 16:
             raise ValueError("Nonce must be 16 bytes long.")

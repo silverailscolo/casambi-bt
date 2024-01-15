@@ -32,8 +32,8 @@ class Casambi:
         self._opContext = OperationsContext()
         self._ownHttpClient = httpClient is None
         self._httpClient = httpClient
-        self._networkGrade = NetworkGrade.EVOLUTION  # if it is a 5.0 BLE network
-        # TODO this is updated to CLASSIC upon discovery as in demo EBR
+        self._networkGrade = NetworkGrade.EVOLUTION  # requires 5.0 BLE firmware
+        # TODO this is updated to CLASSIC using api.casambi.com/uuid info EBR
 
     def _checkNetwork(self) -> None:
         if not self._casaNetwork or not self._casaNetwork._networkRevision:
@@ -127,7 +127,7 @@ class Casambi:
         self._logger.debug(f"Trying to connect to Casambi BLE network address {addr}, uuid {uuid}")
 
         self._casaClient = CasambiClient(
-            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for CLASSIC Check EBR TODO
+            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for both CLASSIC and EVOLUTION
         )
         self._casaClient.setNetworkGrade(self._networkGrade)
 
@@ -177,7 +177,7 @@ class Casambi:
 
         :param target: The targeted unit.
         :param state: The desired state.
-        :return: Nothing is returned by this function. To get the new state register a change handler.
+        :return: Nothing is returned by this function. To get the new state register a change handler (Notify).
         """
         stateBytes = target.getStateAsBytes(state)
         await self._send(target, stateBytes, OpCode.SetState)

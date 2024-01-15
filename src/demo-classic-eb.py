@@ -66,7 +66,7 @@ async def main() -> None:
         
     finally:
         await casa.disconnect()
-
+        print("Demo finished, disconnected")
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()

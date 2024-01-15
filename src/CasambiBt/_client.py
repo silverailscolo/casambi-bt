@@ -45,8 +45,12 @@ from .errors import (  # noqa: E402
 
 @unique
 class IncomingPacketType(IntEnum):
+    ClassicOffline = 2
     UnitState = 6
     NetworkConfig = 9
+    ClassicStateSet = 130 # 0x82
+    ClassicOff = 162 # 0xA2
+    ClassicSetScene = 194 # 0xC2
 
 
 class CasambiClient:
@@ -139,13 +143,12 @@ class CasambiClient:
     def _on_disconnect(self, client: BleakClient) -> None:
         if self._connectionState != ConnectionState.NONE:
             self._logger.debug(f"Received disconnect callback from {self.address}")
-        if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.CONNECTED_UNENCRYPTED:
-            # for CLASSIC: CONNECTED_UNENCRYPTED
+        if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.CONNECTED_UNENCRYPTED: # for CLASSIC
             self._disconnectedCallback()
         self._connectionState = ConnectionState.NONE
 
     async def exchangeKey(self, keystore: KeyStore) -> None:
-        # only for EVOLUTION, not working in CLASSIC
+        # only for EVOLUTION, not used in CLASSIC
         self._checkState(ConnectionState.CONNECTED)
 
         self._logger.debug("Starting secure key exchange...")
@@ -172,7 +175,7 @@ class CasambiClient:
 
             # Device will initiate key exchange, so listen for that
             self._logger.debug("Starting notify")
-            await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.my_notification_handler)
+            await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self._queueCallback)
             self._logger.debug("sleep notify")
             await asyncio.sleep(5.0)
             await self._gattClient.stop_notify(CASA_AUTH_CHAR_UUID)
@@ -186,7 +189,6 @@ class CasambiClient:
         # Wait for EVOLUTION key exchange, will get notified by _exchNotifyCallback
         self._logger.debug("Key exchange Evolution - _notifySignal")
         await self._notifySignal.wait()  # Classic blocked here. BLE4.0 without Secure Connect
-        # it seems no (valid format?) key exchange on Classic networks?
         self._logger.debug("Key exchange - lock")
         await self._activityLock.acquire()
         try:
@@ -245,164 +247,178 @@ class CasambiClient:
             for s in services:
                 self._logger.debug(f"service: {s}") 
             # Result: service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
+
             # matches expected _constants.CASA_UUID. Try to connect...
-            
             firstResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID) # also correct for Classic
-            self._logger.debug(f"Response: {firstResp} elem[0]={firstResp[0]}")
-            if len(firstResp) > 1:
-                self._logger.debug(f"- elem[1]={firstResp[1]}")
-            if len(firstResp) > 2:
-                self._logger.debug(f"- elem[2]={firstResp[2]}")
-            if len(firstResp) > 3:
-                self._logger.debug(f"- elem[3]={firstResp[3]}")
-            if len(firstResp) > 4:
-                self._logger.debug(f"- elem[4]={firstResp[4]}")
-            if len(firstResp) > 5:
-                self._logger.debug(f"- elem[5]={firstResp[5]}")
-            if len(firstResp) > 6:
-                self._logger.debug(f"- elem[6]={firstResp[6]}")
-            if len(firstResp) > 7:
-                self._logger.debug(f"- elem[7]={firstResp[7]}")
-            if len(firstResp) > 8:
-                self._logger.debug(f"- elem[8]={firstResp[8]}")
-            if len(firstResp) > 9:
-                self._logger.debug(f"- elem[9]={firstResp[9]}")
-            # test2 Got b'9b8ae399081d1b58 06 a24d 05 00' elem[0]=0x155 elem[1]=0x138
-            # test3 Got b'dac9cfd20e5b5ab3 06 a24d 05 00' elem[0]=0x218 elem[1]=Ox201
-            # test4 Got b'1ab4c23dea967629 08 a24d 05 00' elem[0]=0x026 elem[1]=Ox180
-            # test5 Got b'236f2ba0486eb51a 06 a24d 05 00' elem[0]=0x35 elem[1]=Ox111
-            # test6 Got b'7b78f2d6d62fce73 08 a24d 05 00' elem[0]=0x123 elem[1]=Ox120
-##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
-##            Service bytearray(b'\x19\xf1\xe8\xa9\xa7\xbe[A\x08\xa2M\x05\x00') elem[0]=25
-##            - elem[1]=241
-##            - elem[2]=232
-##            - elem[3]=169
-##            - elem[4]=167
-##            Service bytearray(b'\x00') elem[0]=0
+            self._logger.debug(f"Response: {firstResp}")
 
+            # test2 Got b'9b8ae399081d1b58 06 a24d 05 00'
+            # test3 Got b'dac9cfd20e5b5ab3 06 a24d 05 00'
+            # test4 Got b'1ab4c23dea967629 08 a24d 05 00'
+            # test5 Got b'236f2ba0486eb51a 06 a24d 05 00'
+            # test6 Got b'7b78f2d6d62fce73 08 a24d 05 00'
 ##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
-##            Service bytearray(b'\x83\x0c\xfcSL\x82*=\x08\xa2M\x05\x00') elem[0]=131
-##            - elem[1]=12
-##            - elem[2]=252
-##            - elem[3]=83
-##            - elem[4]=76
+##            Service bytearray(b'\x19\xf1\xe8\xa9\xa7\xbe[A\x08\xa2M\x05\x00')
+##            Service bytearray(b'\x00') < always returns value 0
+
+##            Service bytearray(b'\x83\x0c\xfcSL\x82*=\x08\xa2M\x05\x00')
 ##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
-##            Service bytearray(b'\x00') elem[0]=0
 
+##            Response: bytearray(b'\xda\xb8\xd8\x1d_\xc8\x16\xae\x08\xa2M\x05\x00')
 
-##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
-##            Response: bytearray(b'\xda\xb8\xd8\x1d_\xc8\x16\xae\x08\xa2M\x05\x00') elem[0]=218
-##            - elem[1]=184
-##            - elem[2]=216
-##            - elem[3]=29
-##            - elem[4]=95
-##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
-##            Response: bytearray(b'\x00') elem[0]=0
-
-##            service: 0000fe4d-0000-1000-8000-00805f9b34fb (Handle: 7): Casambi Technologies Oy
-##            Response: bytearray(b'\xec\x0fRll\x19\xdeI\x08\xa2M\x05\x00') elem[0]=236
-##            - elem[1]=15
-##            - elem[2]=82
-##            - elem[3]=108
-##            - elem[4]=108
-##            - elem[2]=25
-##            - elem[3]=222
-##            - elem[4]=73
-##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
-##            Response: bytearray(b'\x00') elem[0]=0
+##            Response: bytearray(b'\xec\x0fRll\x19\xdeI\x08\xa2M\x05\x00')
 
 ##            Response: bytearray(b'"\xa8\x90Y\xdb\xf5\x95X\x08\xa2M\x05\x00')
-##            - elem[0]=34 0x22
-##            - elem[1]=168 0xA8
-##            - elem[2]=144 0x90
-##            - elem[3]=89 0x59 ?
-##            - elem[4]=219 0xDB
-##            - elem[5]=245
-##            - elem[6]=149
-##            - elem[7]=88
-##            - elem[8]=8 0x08
-##            - elem[9]=162 0xA2
-##            service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)
-##            Response: bytearray(b'\x00') elem[0]=0
+            
+##            Response: bytearray(b'\xd29\x9f\x88\x97\x9a\x95f\x06\xa2M\x05\x00')
+##            Parsed Classic nonce 15148314230645232998, unitId 6, flags 162, Brightness 5, Vertical 77
 
-            self._logger.debug("service: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)") 
-            secondResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID2) # seen on Classic
-            self._logger.debug(f"Response: {secondResp} elem[0]={secondResp[0]}")
-            if len(secondResp) > 1:
-                self._logger.debug(f"- elem[1]={secondResp[1]}")
-            if len(secondResp) > 2:
-                self._logger.debug(f"- elem[2]={secondResp[2]}")
-            if len(secondResp) > 3:
-                self._logger.debug(f"- elem[1]={secondResp[3]}")
-            if len(secondResp) > 4:
-                self._logger.debug(f"- elem[2]={secondResp[4]}")
-                
-##            thirdResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID3) # seen on Classic
-##            self._logger.debug(f"Service {thirdResp} elem[0]={thirdResp[0]}")
-##            if len(thirdResp) > 1:
-##                self._logger.debug(f"- elem[1]={thirdResp[1]}")
-##            if len(thirdResp) > 2:
-##                self._logger.debug(f"- elem[2]={thirdResp[2]}")
+##            Response: bytearray(b'\xfcg5\xeb\xadRF\x8c\x06\xa2M\x05\x00')
+##            Parsed Classic nonce 18187564906500474508, unitId 6, flags 162, Brightness 5, Vertical 77
 
-##            self._mtu, self._unitId, self._flags, self._nonce = struct.unpack_from(
-##                ">BHH4s", firstResp, 2
-                  # "BHH4s" = format string, 2 = offset # only guessing in format
-##            )
-##            self._logger.debug(
-##                f"Parsed Classic mtu {self._mtu}, unit {self._unitId}, flags {self._flags}, nonce {b2a(self._nonce)}"
-##            )
-            # Test9:  Parsed Classic mtu 185, unit 23513, flags 8844, nonce b'0306a24d'
-            # Test10: Parsed Classic mtu 248, unit 8119, flags 62415, nonce b'fe06a24d'
+##            Response: bytearray(b'SY\xa8f\xd8V*u\x08\xa2M\x05\x00')
+##            Parsed Classic nonce 6006016737744923253, unitId 8, flags 162, Brightness 5, Vertical 77
+
+##            Response: bytearray(b'\xae\xddx\x9f\x19\xe8|\x14\x06\xa2M\x05\x00')
+##            Parsed Classic nonce 12600359957182315540, unitId 6, flags 162, Brightness 77, Vertical 5
+            
+##            Response: bytearray(b'\xc6\xa5\xc5\x0f\x01W\xe7\xeb\x06\xa2M\x05\x00')
+##            Parsed Classic nonce:14314063658904709099, unitId:6, opc:162, opc2:77, Brightness:5, Vertical:0
+
+##            Response: bytearray(b'\xa0mhS!\x1fq\x86\x08\xa2M\x05\x00')
+##            Parsed Classic nonce:11560010524777214342, unitId:8, opc:162, opc2:77, Brightness:5, Vertical:0
+
+##            Response: bytearray(b'\x04\xaf\xb79f\xafK\xfb\x08\xa2M\x05\x00')
+##            Parsed Classic nonce:337689954239859707, unitId:8, opc:162, opc2:77, Brightness:5, Vertical:0
+
+            # unpack first read response from Slave
+            self._nonce, self._unitId, opc, mtu, B, V = struct.unpack_from(
+                ">QBBBBB", firstResp, 0  # patroon random(16) + altijd 08 a2 4d 05 00
+                  # "BHH4s" = format string, 2 = offset
+            )
+            self._logger.debug(
+                f"Parsed Classic nonce:{self._nonce}, unitId:{self._unitId}, opc:{opc}, mtu:{mtu}, Brightness:{B}, Vertical:{V}"
+            )
              
             # (Classic firstResp size is 13 hex bytes)
-            # struct.error: unpack_from requires a buffer of at least 23 bytes for unpacking
-            # 21 bytes at offset 2 (actual buffer size is 13)
-            # see: https://docs.python.org/3/library/struct.html
                 
             # descr = self._gattClient.read_gatt_descriptor
             # self._logger.debug(f"descriptor: {descr}")
             # descriptor: <bound method BleakClient.read_gatt_descriptor of <BleakClient, EB6F92F7-3599-159F-9782-0398CE2AA4E5, <class 'bleak.backends.corebluetooth.client.BleakClientCoreBluetooth'>>>
 
-            #characteristics = self._gattClient.characteristics # try to learn EBR, but .characteristics not available in Casambi
+            #characteristics = self._gattClient.characteristics # .characteristics not available in Casambi
             #for c in characteristics:
             #    self._logger.debug(f"characteristics: {c}") 
                         
-            self._logger.debug("Connect followup - write_gatt_char")
-            #await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, keyExchResponse)
+            self._logger.debug("Connect followup - start notify")
+            # Device will initiate connection, so listen for that
+            #await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.my_notification_handler)
+
+            #self._logger.debug("sleep notify")
+            #await asyncio.sleep(5.0)
+            #await self._gattClient.stop_notify(CASA_AUTH_CHAR_UUID)
+
+            self._logger.debug("Starting notify 2")
+            await self._gattClient.start_notify(
+                CASA_AUTH_CHAR_UUID, self._queueCallback
+            )
+
+##            Connect followup - write_gatt_char
+##            Starting notify
+##            sleep notify
+##            Starting notify 2
+##            waiting for _ClassicStartCallback
+            
         finally:
             self._activityLock.release()
 
-        # Wait for success response from _exchNotifyCallback
-        self._logger.debug("waiting for _exchNotifyCallback")
-        await self._notifySignal.wait()
-
-        await self._activityLock.acquire()
-        try:
-            self._notifySignal.clear()
-            if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
-                raise ProtocolError("Failed to follow up!")
-            else:
-                self._logger.debug("Classic connect successful")
-            # Skip auth because CLASSIC network doesn't use encryption.
-
-        finally:
-            self._activityLock.release()
+        # Wait for success response from _ClassicStartCallback
+##        self._logger.debug("waiting for _ClassicStartCallback")
+##        await self._notifySignal.wait()  # <<<<<<<< blocking here
+##
+##        await self._activityLock.acquire()
+##        try:
+##            self._notifySignal.clear()
+##            if self._connectionState == ConnectionState.ERROR:  # type: ignore[comparison-overlap]
+##                raise ProtocolError("Failed to follow up!")
+##            # Skip auth because CLASSIC network doesn't use encryption.
+##
+##        finally:
+##            self._activityLock.release()
 
         # CLASSIC uses simple connect() or Just Works, STK = 0 ?
-        self._connectionState = ConnectionState.CONNECTED_UNENCRYPTED  # TODO EBR
+        self._connectionState = ConnectionState.CONNECTED_UNENCRYPTED
+        self._logger.debug("Classic connect successful")
+
+        #TODO EBR fetch 0002?
+##        self._logger.debug("uuid: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)") 
+##        secondResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID2) # seen on Classic
+##        self._logger.debug(f"Response: {secondResp}")
+        # EBR process first read response via Notify
+
+        # Write Request 1
+        await self._activityLock.acquire()
+        try:
+            self._logger.debug("Classic connect - clearing signal")
+            self._notifySignal.clear()
+            if self._connectionState == ConnectionState.ERROR:
+                raise ProtocolError("Invalid key exchange initiation.")
+
+            # Respond to first read response
+            #self._key = keystore.getKey().key  # Session key
+            self._key = b'1234' # PRIVATE EBR
+            self._logger.debug(f"Key {self._key} length={len(self._key)}") # <<< TODO fix Error Key b'Triangel1' length=9
+            self._encryptor = Encryptor(self._key) # special transport_key?
+            messagePrefix = b'\x02'
+            index = b'\x0001'
+            messageOpc = b'\x00'
+            messageState = b'\x010b'
+            mac = self._encryptor.cmac(bytes(index + messageOpc + messageState))
+
+##            c = cmac.CMAC(algorithms.AES(b'7226a03a5f8d34b7e581b2a9fdef3767')) < key
+##            c.update(b"000100010b")
+##            c.finalize()
+##            E296B93AEEB81B1DE994 = 10x2 = te lang, verwacht 4 byte/8 hex cijfers. Slice
+##            met prefix: 02 E296B93AEEB81B1DE994 000100010b
+##            packet[:8] use first part, length = 8
+
+            firstResponse = messagePrefix + mac + index + messageOpc + messageState
+##            firstResponse = struct.pack(
+##                ">BIHBH",
+##                messagePrefix,
+##                mac, # cmac4, # 
+##                index, #startnum,
+##                messageOpc,
+##                messageState
+##            )
+            self._logger.debug(f"Write gatt_char {firstResponse}")
+            await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, firstResponse)
+
+##            Starting notify 2
+##            Classic connect successful
+##            Classic connect - clearing signal
+##            Key b'9226a03a53fd34b7e5d7b2a9fdbf3780' length=32
+##            CMAC is b'd283062bd7f6dc7a4766bab8b5aba018'
+##            Write gatt_char b'\x02\xd2\x83\x06+\xd7\xf6\xdczGf\xba\xb8\xb5\xab\xa0\x18\x0001\x00\x010b'
+##            Demo connected
+
+        finally:
+            self._activityLock.release()
  
     def setNetworkGrade(self, grade: NetworkGrade) -> None:
         self._networkGrade = grade
 
-    # An easy notify function, just print the received data DEBUG EBR
-    def my_notification_handler(sender, data):
+    async def my_notification_handler(sender, data):
+        # Notify function for CLASSIC first response EBR
         sender._logger.debug("_notify" + (', '.join('{:02x}'.format(x) for x in data)))
+        sender._logger.debug(f"Notify Response: {data}")
     
     def _queueCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
         self._logger.debug("Starting _queueCallback")
         self._callbackQueue.put_nowait((handle, data))
 
     async def _processCallbacks(self) -> None:
+        self._logger.debug("_processCallbacks")
         while True:
             handle, data = await self._callbackQueue.get()
             await self._activityLock.acquire()
@@ -423,19 +439,22 @@ class CasambiClient:
             self._authNotifyCallback(handle, data)
         elif self._connectionState == ConnectionState.AUTHENTICATED:
             self._establishedNotifyCallback(handle, data)
+        elif self._connectionState == ConnectionState.CONNECTED_UNENCRYPTED: # CLASSIC
+            self._establishedNotifyCallback(handle, data)
         else:
             self._logger.warning(
                 f"Unhandled notify in state {self._connectionState}: {b2a(data)}"
             )
 
     def _exchNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
+        # only for EVOLUTION
         self._logger.debug(f"_exchNotifyCallback data: {b2a(data)}.")
         if data[0] == 0x2:
             # Parse device pubkey
             x, y = struct.unpack_from("<32s32s", data, 1)
             x = int.from_bytes(x, byteorder="little")
             y = int.from_bytes(y, byteorder="little")
-            self._logger.debug(f"Got public key {x}, {y}")  # looks OK in CLASSIC? EBR
+            self._logger.debug(f"Got public key {x}, {y}")
 
             self._devicePubKey = ec.EllipticCurvePublicNumbers(
                 x, y, ec.SECP256R1()
@@ -477,10 +496,8 @@ class CasambiClient:
             self._notifySignal.set()
 
     async def authenticate(self, keystore: KeyStore) -> None:
-        if self._networkGrade == NetworkGrade.CLASSIC: # no keys in Classic Network # TODO remove hack EBR
-            self._connectionState = ConnectionState.AUTHENTICATED
-        else:
-            self._checkState(ConnectionState.KEY_EXCHANGED)
+        # only for EVOLUTION
+        self._checkState(ConnectionState.KEY_EXCHANGED)
 
         self._logger.debug("Authenticating channel...")
         key = keystore.getKey()  # Session key, returns key with the highest role (0-3)
@@ -526,6 +543,7 @@ class CasambiClient:
             self._activityLock.release()
 
     def _authNotifyCallback(self, handle: BleakGATTCharacteristic, data: bytes) -> None:
+        # only for EVOLUTION
         self._logger.debug("Processing authentication response...")
 
         # TODO: Verify counter
@@ -560,9 +578,7 @@ class CasambiClient:
         return self._nonce[:4] + _id + self._nonce[8:]
 
     async def send(self, packet: bytes) -> None:
-        
         if self._networkGrade == NetworkGrade.EVOLUTION:
-
             self._checkState(ConnectionState.AUTHENTICATED)
 
             await self._activityLock.acquire()
@@ -584,30 +600,37 @@ class CasambiClient:
                 self._activityLock.release()
                 
         elif self._networkGrade == NetworkGrade.CLASSIC:
-            self._checkState(ConnectionState.CONNECTED) # TODO EBR fix before for Classic
+            self._checkState(ConnectionState.CONNECTED_UNENCRYPTED) # TODO EBR fix before for Classic
             await self._activityLock.acquire()
             try:
                 self._logger.debug(
                     f"Sending packet {b2a(packet)} with counter {self._outPacketCount}"
                 )
-
-                counter = int.to_bytes(self._outPacketCount, 4, "little")
-                headerPacket = counter + b"\x07" + packet
-
-                self._logger.debug(f"Packet with header: {b2a(headerPacket)}")
-                # READ ONLY DEV EBR
-                currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
-                self._logger.debug(f"Read packet currentval = {b2a(currentval)}. Notify started")
-
-                await self._gattClient.start_notify(CASA_AUTH_CHAR_UUID, self.notifyCallback)
+                # prepare response
+                messagePrefix = b'\02'
+                mac = self._encryptor.cmac(self._outPacketCount + packet)
+                m = struct.pack(
+                    ">BIHBH",
+                    messagePrefix,
+                    mac,
+                    self._outPacketCount,
+                    packet
+                )
                 
-                # await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, headerPacket, response=True) # this is experimental for Classic
+                self._logger.debug(f"Packet with header: {b2a(headerPacket)}")
+                # READ-ONLY for DEV EBR
+                #currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
+                self._logger.debug(f"Read packet currentval = {b2a(currentval)}. Notify started")
+                                
+                await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, m, response=True) # experimental for Classic
                 # await self._writeEncPacket( # EncPacket = only for Evolution
                 #    headerPacket, self._outPacketCount, CASA_AUTH_CHAR_UUID
                 #)
                 self._outPacketCount += 1
             finally:
                 self._activityLock.release()
+        else:
+            self._logger.debug(f"Unknown network grade {self._networkGrade}")
 
     def notifyCallback(
         self, sender: BleakGATTCharacteristic, data: bytearray
@@ -620,26 +643,33 @@ class CasambiClient:
         # TODO: Check incoming counter and direction flag
         self._inPacketCount += 1
 
-        try:
-            data = self._encryptor.decryptAndVerify(data, data[:4] + self._nonce[4:])
-        except InvalidSignature:
-            # We simply drop packets with invalid signature here instead of going into an error state
-            self._logger.error(f"Invalid signature for packet {b2a(data)}!")
-            return
+        if self._networkGrade == NetworkGrade.EVOLUTION:
+            try:
+                data = self._encryptor.decryptAndVerify(data, data[:4] + self._nonce[4:])
+            except InvalidSignature:
+                # We simply drop packets with invalid signature here instead of going into an error state
+                self._logger.error(f"Invalid signature for packet {b2a(data)}!")
+                return
+            
+            packetType = data[0]
+            self._logger.debug(f"Incoming data of type {packetType}: {b2a(data)}")
 
-        packetType = data[0]
-        self._logger.debug(f"Incoming data of type {packetType}: {b2a(data)}")
-
-        if packetType == IncomingPacketType.UnitState:
-            self._parseUnitStates(data[1:])
-        elif packetType == IncomingPacketType.NetworkConfig:
-            # We don't care about the config the network thinks it has.
-            # We assume that cloud config and local config match.
-            # If there is a mismatch the user can solve it using the app.
-            # In the future we might want to parse the revision and issue a warning if there is a mismatch.
-            pass
+            if packetType == IncomingPacketType.UnitState:
+                self._parseUnitStates(data[1:])
+            elif packetType == IncomingPacketType.NetworkConfig:
+                # We don't care about the config the network thinks it has.
+                # We assume that cloud config and local config match.
+                # If there is a mismatch the user can solve it using the app.
+                # In the future we might want to parse the revision and issue a warning if there is a mismatch.
+                pass
+            else:
+                self._logger.info(f"Packet type {packetType} not implemented. Ignoring!")
+        elif self._networkGrade == NetworkGrade.CLASSIC:
+            self._logger.debug(f"Incoming data {b2a(data)} Len {len(data)}")
+            #if len(data) < 8:
+            self._parseUnitStatesClassic(data)
         else:
-            self._logger.info(f"Packet type {packetType} not implemented. Ignoring!")
+            self._logger.debug(f"Unknown network grade {self._networkGrade}")
 
     def _parseUnitStates(self, data: bytes) -> None:
         self._logger.debug("Parsing incoming unit states...")
@@ -663,7 +693,7 @@ class CasambiClient:
                 if flags & 8:
                     pos += 1  # TODO: sid?
                 if flags & 16:
-                    pos += 1  # Unkown value
+                    pos += 1  # Unknown value
 
                 state = data[pos : pos + stateLen]
                 pos += stateLen
@@ -684,6 +714,56 @@ class CasambiClient:
             self._logger.error(
                 f"Ran out of data while parsing unit state! Remaining data {b2a(data[oldPos:])} in {b2a(data)}."
             )
+
+    def _parseUnitStatesClassic(self, data: bytes) -> None:
+        self._logger.debug(f"Parsing incoming Classic unit state: {b2a(data)}")
+
+        # unpack notification data
+        opc2 = 0
+        # IncomingPacketType(IntEnum):
+        # ClassicOffline  = 2
+        # ClassicStateSet = 130 = 0x82
+        # ClassicOff      = 162 = 0xA2
+        # ClassicSetScene = 194 = 0xC2
+        if len(data) == 4:
+            unitId, opc, B, V = struct.unpack_from(
+                ">BBBB", data, 0  # pattern: 08 82 05 00
+            )
+            online = 1
+            on = B > 0
+        elif len(data) == 5: # Turn OFF or set Scene
+            unitId, opc, opc2, B, V = struct.unpack_from(
+                ">BBBBB", data, 0  # pattern: 08 a2 (4d) 05 00
+            )
+            self._logger.debug(f"5 byte data of type {opc}")
+            online = opc & 0x80 # use bitmask on opc bit 7
+            on = B > 0
+            # EVOLUTION: state = data[pos : pos + stateLen]
+            if opc == IncomingPacketType.ClassicOffline:
+                # turn off, ignore opc2
+                pass
+            elif opc == IncomingPacketType.ClassicOff:
+                # ignore opc2, simply turn off
+                if B > 0:
+                    self._logger.warn(f"Turned off with Brightness {B}>0")
+            elif opc == IncomingPacketType.ClassicSetScene:
+                # use scene number from opc2
+                sceneId = opc2
+                # TODO
+                pass
+            else:
+                self._logger.warn("unknown packettype")
+        else:
+            self._logger.debug(f"Received message of length{len(data)}")
+
+        state = struct.pack('>BB', B, V) # repack state bytes
+        self._dataCallback(
+            IncomingPacketType.UnitState,
+            {"id": unitId, "online": online, "on": on, "state": state},
+        )            
+        self._logger.debug(
+            f"Parsed Classic status update for unitId {unitId}: opcode {self._flags}, Brightness {B}, Vertical {V}"
+        )
 
     async def disconnect(self) -> None:
         self._logger.debug("Disconnecting...")

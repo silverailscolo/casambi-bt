@@ -31,7 +31,7 @@ class UnitControlType(Enum):
     VERTICAL = 5
     """The vertical value of the light can be adjusted."""
 
-    UNKOWN = 99
+    UNKNOWN = 99
     """State isn't implemented. Control saved for debuggin purposes."""
 
 
@@ -334,21 +334,45 @@ class Unit:
 
         # TODO: Support for resolutions >8 byte?
         for c in self.unitType.controls:
-            # Extract all relevant bytes from the state
-            byteLen = (c.length + c.offset % 8 - 1) // 8 + 1
-            cBytes = value[c.offset // 8 : c.offset // 8 + byteLen]
 
-            # Extract c.Length bits form the byte string
-            cInt = int.from_bytes(cBytes, byteorder="little", signed=False)
-            cInt >>= c.offset % 8
-            cInt &= 2**c.length - 1
+            if len(value) > 4:    # EVOLUTION
+                # Extract all relevant bytes from the state
+                byteLen = (c.length + c.offset % 8 - 1) // 8 + 1
+                cBytes = value[c.offset // 8 : c.offset // 8 + byteLen]
+
+            else:    # CLASSIC
+                # Extract all relevant bytes from the state
+                byteLen = (c.length + c.offset % 8 - 1) // 8 + 1
+                # B: (8+ 0%8 -1)//8 +1 = (8+ 0 -1)//8 +1 = 7//8 +1 = 1
+                # V: (8+ 8%8 -1)//8 +1 = (8+ 1 -1)//8 +1 = 8//8 +1 = 2
+                cBytes = value[c.offset // 8 : c.offset // 8 + byteLen]
+                # B: value[0//8 : 0//8+1] = value[0:1]
+                # V: value[8//8 : 8//8+2] = value[1:3]
+
+## My unittype JSON
+## Controls=[
+## UnitControl(type=<UnitControlType.DIMMER: 0>, offset=0, length=8, default=255, readonly=False, min=None, max=None),
+## UnitControl(type=<UnitControlType.VERTICAL: 5>, offset=8, length=8, default=127, readonly=False, min=None, max=None)
+## ]
+## other Sento unittypes have extra controls with offset > *
+
+                # Extract c.Length bits form the byte string
+                cInt = int.from_bytes(cBytes, byteorder="little", signed=False)
+                cInt >>= c.offset % 8
+                cInt &= 2**c.length - 1
 
             if c.type == UnitControlType.DIMMER:
                 scale = UnitState.DIMMER_RESOLUTION - c.length
                 self._state.dimmer = cInt << scale
+                # CLASSIC TODO EBR cleanup if/else
+                _LOGGER.debug(f"Dimmer set to {cInt}")
+                # self._state.dimmer = cInt
             elif c.type == UnitControlType.VERTICAL:
                 scale = UnitState.VERTICAL_RESOLUTION - c.length
                 self._state.vertical = cInt << scale
+                # CLASSIC TODO EBR cleanup if/else
+                _LOGGER.debug(f"Vertical set to {cInt}")
+                # self._state.vertical = cInt
             elif c.type == UnitControlType.RGB:
                 hueLen = (c.length * 10) // 18
                 hueMask = 2**hueLen - 1
@@ -384,10 +408,10 @@ class Unit:
                 tempMask = 2**c.length - 1
                 # TODO: We should probalby try to make this number a bit more round
                 self._state.temperature = int(((cInt / tempMask) * tempRange) + c.min)
-            elif c.type == UnitControlType.UNKOWN:
+            elif c.type == UnitControlType.UNKNOWN:
                 # Might be useful for implementing more state types
                 _LOGGER.debug(
-                    f"Value for unkown control type at {c.offset}: {cInt}. Unit type is {self.unitType.id}."
+                    f"Value for unknown control type at {c.offset}: {cInt}. Unit type is {self.unitType.id}."
                 )
 
         _LOGGER.debug(f"Parsed {b2a(value)} to {self.state.__repr__()}")
