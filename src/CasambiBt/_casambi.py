@@ -113,7 +113,9 @@ class Casambi:
             addr_or_device = addr_or_device[0]
             self._networkGrade = NetworkGrade.CLASSIC
             self._logger.debug(f"CLASSIC uuid = {uuid}")
-                
+        else:
+            uuid = ""
+
         if isinstance(addr_or_device, BLEDevice):
             addr = addr_or_device.address
         else:
@@ -127,7 +129,7 @@ class Casambi:
         self._logger.debug(f"Trying to connect to Casambi BLE network address {addr}, uuid {uuid}")
 
         self._casaClient = CasambiClient(
-            addr_or_device, self._dataCallback, self._disconnect_callback # same callback for both CLASSIC and EVOLUTION
+            addr_or_device, self._dataCallback, self._disconnect_callback  # same callback for both CLASSIC and EVOLUTION
         )
         self._casaClient.setNetworkGrade(self._networkGrade)
 
@@ -377,7 +379,7 @@ class Casambi:
         The handler is supplied by the unit for which the state changed
         and the state property of the unit is set to the new state.
 
-        :param handler: The method to call when a new unit state is received.
+        :param handler: The method to call.
         """
         self._unitChangedCallbacks.append(handler)
         self._logger.debug(f"Registered unit changed handler {handler}")

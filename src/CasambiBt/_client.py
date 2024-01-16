@@ -19,7 +19,7 @@ from bleak_retry_connector import (
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from ._constants import CASA_AUTH_CHAR_UUID, CASA_AUTH_CHAR_UUID2, CASA_AUTH_CHAR_UUID3, NetworkGrade
+from ._constants import CASA_AUTH_CHAR_UUID, NetworkGrade # , CASA_AUTH_CHAR_UUID2, CASA_AUTH_CHAR_UUID3
 from ._encryption import Encryptor
 from ._keystore import KeyStore
 
@@ -367,7 +367,7 @@ class CasambiClient:
             # Respond to first read response
             #self._key = keystore.getKey().key  # Session key
             self._key = b'1234' # PRIVATE EBR
-            self._logger.debug(f"Key {self._key} length={len(self._key)}") # <<< TODO fix Error Key b'Triangel1' length=9
+            self._logger.debug(f"Key {self._key} length={len(self._key)}") # <<< TODO fix Error Key b'PASSWORD' length=9
             self._encryptor = Encryptor(self._key) # special transport_key?
             messagePrefix = b'\x02'
             index = b'\x0001'
@@ -607,8 +607,9 @@ class CasambiClient:
                     f"Sending packet {b2a(packet)} with counter {self._outPacketCount}"
                 )
                 # prepare response
-                messagePrefix = b'\02'
-                mac = self._encryptor.cmac(self._outPacketCount + packet)
+                messagePrefix = b'\x02'
+                counter = int.to_bytes(self._outPacketCount, 4, "little")
+                mac = self._encryptor.cmac(counter + packet)
                 m = struct.pack(
                     ">BIHBH",
                     messagePrefix,
@@ -617,11 +618,10 @@ class CasambiClient:
                     packet
                 )
                 
-                self._logger.debug(f"Packet with header: {b2a(headerPacket)}")
+                self._logger.debug(f"Packet ready: {b2a(m)}")
                 # READ-ONLY for DEV EBR
-                #currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
-                self._logger.debug(f"Read packet currentval = {b2a(currentval)}. Notify started")
-                                
+                # currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
+
                 await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, m, response=True) # experimental for Classic
                 # await self._writeEncPacket( # EncPacket = only for Evolution
                 #    headerPacket, self._outPacketCount, CASA_AUTH_CHAR_UUID
@@ -745,14 +745,14 @@ class CasambiClient:
             elif opc == IncomingPacketType.ClassicOff:
                 # ignore opc2, simply turn off
                 if B > 0:
-                    self._logger.warn(f"Turned off with Brightness {B}>0")
+                    self._logger.warning(f"Turned off with Brightness {B}>0")
             elif opc == IncomingPacketType.ClassicSetScene:
                 # use scene number from opc2
                 sceneId = opc2
                 # TODO
                 pass
             else:
-                self._logger.warn("unknown packettype")
+                self._logger.warning("unknown packettype")
         else:
             self._logger.debug(f"Received message of length{len(data)}")
 
