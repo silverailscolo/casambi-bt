@@ -26,7 +26,9 @@ async def main() -> None:
 
     devset = devicesets[selection]
     device = devset[0]
-    classic_uuid: str = devset[1].hex(':')  # we need this as uuid for CLASSIC network lookup on api.casambi.com
+    classic_uuid: str = devset[1].hex(':')  # we need this as uuid for macOS network lookup on api.casambi.com
+    # TODO in discover.py replace await by
+    # device = await BleakScanner.find_device_by_name(args.name, cb=dict(use_bdaddr=True))
 
     print(f"address:{device.address} uuid:{device.details}")
     
@@ -61,7 +63,8 @@ async def main() -> None:
         for s in casa.scenes:
             print(s.__repr__())
             
-        # await asyncio.sleep(60)
+        while True:
+            await asyncio.sleep(60)
         # listen for notifications
         
     finally:

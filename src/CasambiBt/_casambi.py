@@ -99,7 +99,7 @@ class Casambi:
         """Connect and authenticate to a network.
 
         :param addr_or_device: The MAC address of the network or a BLEDevice. Use `_discover` to find the address of a network.
-        :param password: The password for the bluetooth network, also used to log in to api.casambi.com
+        :param password: The password (only) used to log in to api.casambi.com
         :param forceOffline: Whether to avoid contacting the api.casambi.com servers.
         :raises AuthenticationError: The supplied password is invalid.
         :raises ProtocolError: The network did not follow the expected protocol.

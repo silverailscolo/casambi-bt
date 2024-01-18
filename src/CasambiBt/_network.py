@@ -2,7 +2,8 @@ import json
 import logging
 import pickle
 from dataclasses import dataclass
-from datetime import datetime # , timezone
+from datetime import datetime
+import pytz
 from typing import Optional, cast
 
 import httpx
@@ -31,7 +32,7 @@ class _NetworkSession:
     role: int = 3  # TODO: Support other role types?
 
     def expired(self) -> bool:
-        return datetime.now() > self.expires
+        return datetime.now(tz=pytz.UTC) > self.expires
 
 
 class Network:
@@ -155,7 +156,7 @@ class Network:
 
     async def logIn(self, password: str, forceOffline: bool = False) -> None:
         """ Login on api.casambi.com to fetch configurations.
-            Returned info was previously stored there by gateway app during hardware setup.
+            Returned info was previously stored there by gateway Casambi app during hardware setup.
 
         """
         await self.getNetworkId(forceOffline)
@@ -173,8 +174,9 @@ class Network:
         if res.status_code == httpx.codes.OK:
             # Parse session
             sessionJson = res.json()
-            sessionJson["expires"] = datetime.utcfromtimestamp(
-                sessionJson["expires"] / 1000
+            sessionJson["expires"] = datetime.fromtimestamp(
+                sessionJson["expires"] / 1000,
+                tz=pytz.UTC
             )
             self._session = _NetworkSession(**sessionJson)
             # stores session info returned from api.casambi.com for later use
@@ -189,7 +191,7 @@ class Network:
             raise AuthenticationError("Not authenticated!")
 
         assert self._id is not None, "Network id must be set."
-
+        network = None
         # TODO: Save and send revision to receive actual updates?
 
         cachedNetworkPath = self._cachePath / f"{self._id}.json"
@@ -200,7 +202,8 @@ class Network:
                 f"Loaded cached network. Revision: {self._networkRevision}"
             )
         else:
-            # raise NetworkOnlineUpdateNeededError("Network isn't cached.")
+            if forceOffline:
+                raise NetworkOnlineUpdateNeededError("Network isn't cached.")
             self._networkRevision = 0
 
         if not forceOffline:
@@ -252,7 +255,7 @@ class Network:
 
         self._networkName = network["network"]["name"]
             
-        # TODO: Parse managerKey and visitorKey for Classic networks. They are visible on api.casambi.com
+        # Parse managerKey and visitorKey for Classic networks already done. They are visible on api.casambi.com
         
         if self._keystore.size() == 0:
             self._logger.warning("Empty keystore")
