@@ -3,7 +3,7 @@ import logging
 import pickle
 from dataclasses import dataclass
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 from typing import Optional, cast
 
 import httpx
@@ -32,7 +32,7 @@ class _NetworkSession:
     role: int = 3  # TODO: Support other role types?
 
     def expired(self) -> bool:
-        return datetime.now(tz=pytz.UTC) > self.expires
+        return datetime.now(tz=ZoneInfo("UTC")) > self.expires
 
 
 class Network:
@@ -176,7 +176,7 @@ class Network:
             sessionJson = res.json()
             sessionJson["expires"] = datetime.fromtimestamp(
                 sessionJson["expires"] / 1000,
-                tz=pytz.UTC
+                tz=ZoneInfo("UTC")
             )
             self._session = _NetworkSession(**sessionJson)
             # stores session info returned from api.casambi.com for later use
