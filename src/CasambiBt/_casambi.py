@@ -11,7 +11,7 @@ from ._client import CasambiClient, ConnectionState, IncomingPacketType
 from ._network import Network
 from ._constants import NetworkGrade
 from ._operation import OpCode, OperationsContext
-from ._unit import Group, Scene, Unit, UnitState
+from ._unit import Group, Scene, Unit, UnitState, UnitControlType
 from .errors import ConnectionStateError, ProtocolError
 
 
@@ -184,7 +184,7 @@ class Casambi:
         stateBytes = target.getStateAsBytes(state)
         await self._send(target, stateBytes, OpCode.SetState)
 
-    async def setLevel(self, target: Union[Unit, Group, None], level: int) -> None:
+    async def setLevel(self, target: Union[int, Unit, Group, None], level: int) -> None:
         """Set the level (brightness) for one or multiple units.
 
         If ``target`` is of type ``Unit`` only this unit is affected.
@@ -199,11 +199,20 @@ class Casambi:
         if level < 0 or level > 255:
             raise ValueError()
 
+        if isinstance(target, int):
+            for u in self.units:
+                if u.deviceId == target:
+                    self._logger.debug(f"Found unit {target}")
+                    target = u
+                    break
+        if u is None:
+            self._logger.error("Null unit")
+            
         payload = level.to_bytes(1, byteorder="big", signed=False)
         await self._send(target, payload, OpCode.SetLevel)
 
     async def setVertical(
-        self, target: Union[Unit, Group, None], vertical: int
+        self, target: Union[int, Unit, Group, None], vertical: int
     ) -> None:
         """Set the vertical (balance between top and bottom LED) for one or multiple units.
 
@@ -219,6 +228,15 @@ class Casambi:
         if vertical < 0 or vertical > 255:
             raise ValueError()
 
+        if isinstance(target, int):
+            for u in self.units:
+                if u.deviceId == target:
+                    self._logger.debug(f"Found unit {target}")
+                    target = u
+                    break
+        if u is None:
+            self._logger.error("Null unit")
+        
         payload = vertical.to_bytes(1, byteorder="big", signed=False)
         await self._send(target, payload, OpCode.SetVertical)
 
@@ -317,18 +335,63 @@ class Casambi:
             raise TypeError(f"Unknown target type {type(target)}")
 
         self._logger.debug(
-            f"Sending operation {opcode.name} with payload {b2a(state)} for {targetCode:x}"
+            f"Sending operation {opcode.name} with payload {b2a(state)} for targetCode {hex(targetCode)}"
         )
+        # Debug results for CLASSIC so far:
+        # TODO fix code for Scene, etc EBR
 
+        # Sending operation SetLevel with payload b'00' for 601=0x601
+        
         if self._networkGrade == NetworkGrade.CLASSIC:
-            opPkt = self._opContext.prepareOperationClassic(opcode, targetCode, state)
+            # insert current states not changed by new state
+            # clip last byte for CLASSIC except for setScene op
+            # turn off: 0x00 invoegen voor laatste paar
+            # turn on = lampId + helderheid
+
+##            for c in target.unitType.controls: # must be simpler to get this from unit, but I get Nonetype
+##                if c.type == UnitControlType.DIMMER:
+##                    scale = UnitState.DIMMER_RESOLUTION - c.length
+##                    scaledL = target._state.level >> scale
+##                elif c.type == UnitControlType.VERTICAL:
+##                    scale = UnitState.VERTICAL_RESOLUTION - c.length
+##                    scaledV = target._state.vertical >> scale
+                    
+##            Unit(_typeId=816, deviceId=6, uuid='A2882220-9119-47C3-A868-CAB6F08D4609', address='81b4d28c90bc',
+##            name='Sento beneden', firmwareVersion='6680', unitType=UnitType(id=816, model='Sento', manufacturer='Occhio',
+##            mode='EXT/2ch/Dim,Vertical[NoMix]', stateLength=2, controls=[
+##            UnitControl(type=<UnitControlType.DIMMER: 0>, offset=0, length=8, default=255, readonly=False, min=None, max=None),
+##            UnitControl(type=<UnitControlType.VERTICAL: 5>, offset=8, length=8, default=127, readonly=False, min=None, max=None)]),
+##            _state=None, _on=False, _online=False)
+
+            self._logger.debug(f"preparing state {b2a(state)}")
+            
+            if opcode == OpCode.SetLevel:
+                # combine with current Vertical
+                newStateBytes = state + b'\x00' # scaledL TODO fetch current L and V
+            elif opcode == OpCode.SetVertical:
+                # combine with current Level
+                newStateBytes = b'\x00' + state # scaledL + state
+            elif opcode == OpCode.SetState:
+                newStateBytes = state
+            else:
+                raise ValueError(f"Unsupported CLASSIC opcode {op}")
+
+            self._logger.debug(f"preparing newstate {b2a(newStateBytes)}")
+            self._logger.debug(f"preparing newStateBytes = {b2a(newStateBytes)}")
+            targetbytes = (targetCode >> 8).to_bytes(1, 'big')
+            opPkt = targetbytes + b'\x02' + newStateBytes
+            self._logger.debug(f"preparing opPkt = {b2a(opPkt)}")
+##            Sending packet b'06026400' with counter 2
+##            CMAC is b'065609cfb2f65c8dfb428b852c45d2fb'
+##            Packet ready: b'02065609cf000206026400'
+
         elif self._networkGrade == NetworkGrade.EVOLUTION:
             opPkt = self._opContext.prepareOperation(opcode, targetCode, state)
         else:
             raise TypeError(f"Unknown network grade {self._networkGrade}")
-            
+    
         try:
-            await self._casaClient.send(opPkt)
+            await self._casaClient.send(opPkt) # complete content, send() will add any prefix, cmac and encryption
         except ConnectionStateError as exc:
             if exc.got == ConnectionState.NONE:
                 self._logger.debug("Trying to reconnect broken connection once.")

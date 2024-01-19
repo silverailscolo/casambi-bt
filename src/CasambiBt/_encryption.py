@@ -44,13 +44,13 @@ class Encryptor:
     def cmac(self, packet: bytes) -> bytes:
         # unencrypted for CLASSIC
         self._logger.debug(
-            f"Adding MAC to packet: {b2a(packet)} of len {len(packet)}"
+            f"Adding CMAC to packet: {b2a(packet)} of len {len(packet)}" # includes index
         )
         packet = bytes(packet)
 
         cmacCipher = CMAC(self._aes) # contains LTK
         cmacCipher.update(packet)
-        cmac = cmacCipher.finalize()
+        cmac = cmacCipher.finalize() # is inserted before payload, so for now return cmac only
         self._logger.debug(f"packet mac: {cmac}")
 
         return cmac
@@ -76,7 +76,7 @@ class Encryptor:
     def verify(
         self, packet: bytes, headerLen: int = 2
     ) -> bytes:
-        # unencrypted for CLASSIC
+        # unencrypted verify only for CLASSIC TODO use for connection?
         self._logger.debug(
             f"Verifying Classic packet: {b2a(packet)} of len {len(packet)}"
         )

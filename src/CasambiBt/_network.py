@@ -32,8 +32,7 @@ class _NetworkSession:
     role: int = 3  # TODO: Support other role types?
 
     def expired(self) -> bool:
-        return datetime.now(tz=ZoneInfo("UTC")) > self.expires
-
+        return datetime.now() > self.expires # fix deprecatioon warning
 
 class Network:
     def __init__(self, uuid: str, httpClient: AsyncClient) -> None:
@@ -174,10 +173,13 @@ class Network:
         if res.status_code == httpx.codes.OK:
             # Parse session
             sessionJson = res.json()
+            self._logger.debug(f'Session expires: {sessionJson["expires"]}')
             sessionJson["expires"] = datetime.fromtimestamp(
                 sessionJson["expires"] / 1000,
-                tz=ZoneInfo("UTC")
+                tzinfo=zoneinfo.ZoneInfo(key='UTC')
+                #ZoneInfo("UTC")
             )
+            self._logger.debug(f'Session expires UTC: {sessionJson["expires"]}')
             self._session = _NetworkSession(**sessionJson)
             # stores session info returned from api.casambi.com for later use
             self._logger.debug("Login successful.")

@@ -354,7 +354,7 @@ class Unit:
 ## UnitControl(type=<UnitControlType.DIMMER: 0>, offset=0, length=8, default=255, readonly=False, min=None, max=None),
 ## UnitControl(type=<UnitControlType.VERTICAL: 5>, offset=8, length=8, default=127, readonly=False, min=None, max=None)
 ## ]
-## other Sento unittypes have extra controls with offset > *
+## other Sento unittypes expected to have extra controls with offset > 16
 
                 # Extract c.Length bits form the byte string
                 cInt = int.from_bytes(cBytes, byteorder="little", signed=False)

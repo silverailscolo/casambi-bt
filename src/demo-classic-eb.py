@@ -51,20 +51,22 @@ async def main() -> None:
         # await asyncio.sleep(5)
 
         # Turn all lights off
-        # await casa.setLevel(None, 0)
-        # await asyncio.sleep(1)
+        await casa.setLevel(6,255) # call unit by ID
+        await asyncio.sleep(1)
 
         # Print the state of all units
         print("===========")
         for u in casa.units:
             print(u.__repr__())
+            #print(u._state.level + " " + u._state.vertical)
         # Print the state of all scenes
         print("===========")
         for s in casa.scenes:
             print(s.__repr__())
             
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
+            print("...")
         # listen for notifications
         
     finally:

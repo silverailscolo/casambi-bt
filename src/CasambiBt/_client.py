@@ -142,7 +142,7 @@ class CasambiClient:
 
     def _on_disconnect(self, client: BleakClient) -> None:
         if self._connectionState != ConnectionState.NONE:
-            self._logger.debug(f"Received disconnect callback from {self.address}")
+            self._logger.debug(f"Received disconnect callback from {self.address} State = {self._connectionState}")
         if self._connectionState == ConnectionState.AUTHENTICATED or self._connectionState == ConnectionState.CONNECTED_UNENCRYPTED: # for CLASSIC
             self._disconnectedCallback()
         self._connectionState = ConnectionState.NONE
@@ -317,25 +317,27 @@ class CasambiClient:
             #self._logger.debug("sleep notify")
             #await asyncio.sleep(5.0)
             #await self._gattClient.stop_notify(CASA_AUTH_CHAR_UUID)
-
-            self._logger.debug("Starting notify 2")
+            
+            self._logger.debug("Starting notify [19]")
             await self._gattClient.start_notify(
                 CASA_AUTH_CHAR_UUID, self._queueCallback
             )
-
-##            Connect followup - write_gatt_char
+            
 ##            Starting notify
 ##            sleep notify
 ##            Starting notify 2
 ##            waiting for _ClassicStartCallback
+
+            # Connect followup - write_gatt_char [23]?
+            # skip [23 write to 000c]
             
         finally:
             self._activityLock.release()
 
         # Wait for success response from _ClassicStartCallback
-##        self._logger.debug("waiting for _ClassicStartCallback")
-##        await self._notifySignal.wait()  # <<<<<<<< blocking here
-##
+        #self._logger.debug("waiting for _ClassicStartCallback")
+        #await self._notifySignal.wait()  # <<<<<<<< blocking here, how to activate in a callback?
+
 ##        await self._activityLock.acquire()
 ##        try:
 ##            self._notifySignal.clear()
@@ -354,9 +356,8 @@ class CasambiClient:
 ##        self._logger.debug("uuid: c9ffde48-ca5a-0002-ab83-8f519b482f77 (not in GATT)") 
 ##        secondResp = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID2) # seen on Classic
 ##        self._logger.debug(f"Response: {secondResp}")
-        # EBR process first read response via Notify
 
-        # Write Request 1
+        # Write Command 1 [23]
         await self._activityLock.acquire()
         try:
             self._logger.debug("Classic connect - clearing signal")
@@ -365,42 +366,47 @@ class CasambiClient:
                 raise ProtocolError("Invalid key exchange initiation.")
 
             # Respond to first read response
-            #self._key = keystore.getKey().key  # Session key
-            self._key = b'1234' # PRIVATE EBR
+            #self._key = keystore.getKey().key  # Session key = Casambi password?
+            self._key = b'12345678901234567890123456789012' # PRIVATE EBR
             self._logger.debug(f"Key {self._key} length={len(self._key)}") # <<< TODO fix Error Key b'PASSWORD' length=9
-            self._encryptor = Encryptor(self._key) # special transport_key?
+            self._encryptor = Encryptor(self._key) # need a special transport_key?
             messagePrefix = b'\x02'
-            index = b'\x0001'
+            self._outPacketCount = 1 # CLASSIC starts with 0001 here
+            counter = int.to_bytes(self._outPacketCount, 2, "big")
             messageOpc = b'\x00'
-            messageState = b'\x010b'
-            mac = self._encryptor.cmac(bytes(index + messageOpc + messageState))
+            messageState = b'\x01\x0b'
+            cmac = self._encryptor.cmac(bytes(counter + messageOpc + messageState))
 
 ##            c = cmac.CMAC(algorithms.AES(b'7226a03a5f8d34b7e581b2a9fdef3767')) < key
 ##            c.update(b"000100010b")
 ##            c.finalize()
-##            E296B93AEEB81B1DE994 = 10x2 = te lang, verwacht 4 byte/8 hex cijfers. Slice
+##            E296B93AEEB81B1DE994 = 10x2 = too long, expected 4 byte/8 hex cijfers. Slice
 ##            met prefix: 02 E296B93AEEB81B1DE994 000100010b
 ##            packet[:8] use first part, length = 8
 
-            firstResponse = messagePrefix + mac + index + messageOpc + messageState
+            firstResponse = messagePrefix + cmac[:4] + counter + messageOpc + messageState
 ##            firstResponse = struct.pack(
 ##                ">BIHBH",
 ##                messagePrefix,
-##                mac, # cmac4, # 
-##                index, #startnum,
+##                mac[:4], # cmac4, # TODO rename
+##                self._outPacketCount, #startnum,
 ##                messageOpc,
 ##                messageState
 ##            )
-            self._logger.debug(f"Write gatt_char {firstResponse}")
+            self._logger.debug(f"Write gatt_char {firstResponse} [21]")
             await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, firstResponse)
+
+            self._outPacketCount += 1
 
 ##            Starting notify 2
 ##            Classic connect successful
 ##            Classic connect - clearing signal
-##            Key b'9226a03a53fd34b7e5d7b2a9fdbf3780' length=32
 ##            CMAC is b'd283062bd7f6dc7a4766bab8b5aba018'
 ##            Write gatt_char b'\x02\xd2\x83\x06+\xd7\xf6\xdczGf\xba\xb8\xb5\xab\xa0\x18\x0001\x00\x010b'
 ##            Demo connected
+
+##            CMAC is b'ab873ca94714cabb9fbef68a61848f1d'
+##            Write gatt_char b'\x02\xab\x87<\xa9\x00\x01\x00\x01\x0b' [21]
 
         finally:
             self._activityLock.release()
@@ -423,10 +429,12 @@ class CasambiClient:
             handle, data = await self._callbackQueue.get()
             await self._activityLock.acquire()
             try:
+                self._logger.debug("send to _callbackMultiplexer")
                 self._callbackMultiplexer(handle, data)
             finally:
                 self._callbackQueue.task_done()
                 self._activityLock.release()
+                self._logger.debug("_processCallbacks done")
 
     def _callbackMultiplexer(
         self, handle: BleakGATTCharacteristic, data: bytes
@@ -608,24 +616,23 @@ class CasambiClient:
                 )
                 # prepare response
                 messagePrefix = b'\x02'
-                counter = int.to_bytes(self._outPacketCount, 4, "little")
-                mac = self._encryptor.cmac(counter + packet)
-                m = struct.pack(
-                    ">BIHBH",
-                    messagePrefix,
-                    mac,
-                    self._outPacketCount,
-                    packet
-                )
+                counter = int.to_bytes(self._outPacketCount, 2, "big")
+                cmac = self._encryptor.cmac(counter + packet)
+                
+                m = messagePrefix + cmac[:4] + counter + packet
                 
                 self._logger.debug(f"Packet ready: {b2a(m)}")
-                # READ-ONLY for DEV EBR
-                # currentval = await self._gattClient.read_gatt_char(CASA_AUTH_CHAR_UUID)
 
-                await self._gattClient.write_gatt_char(CASA_AUTH_CHAR_UUID, m, response=True) # experimental for Classic
-                # await self._writeEncPacket( # EncPacket = only for Evolution
-                #    headerPacket, self._outPacketCount, CASA_AUTH_CHAR_UUID
-                #)
+##                preparing newstate b'0000'
+##                preparing newStateBytes = b'0000'
+##                preparing opPkt = b'06020000'
+##                Sending packet b'06020000' with counter 2
+##                CMAC is b'f781e8adf835dd641df916fe895b5597'
+##                Packet ready: b'02 f835dd641df916fe895b5597 0000 06020000' < CMAC clipped to wrong side, counter missing 
+
+                await self._gattClient.write_gatt_char(
+                    CASA_AUTH_CHAR_UUID, m, response=True
+                )
                 self._outPacketCount += 1
             finally:
                 self._activityLock.release()
@@ -664,10 +671,16 @@ class CasambiClient:
                 pass
             else:
                 self._logger.info(f"Packet type {packetType} not implemented. Ignoring!")
+                
         elif self._networkGrade == NetworkGrade.CLASSIC:
-            self._logger.debug(f"Incoming data {b2a(data)} Len {len(data)}")
-            #if len(data) < 8:
-            self._parseUnitStatesClassic(data)
+            self._logger.debug(f"Incoming data: {b2a(data)} Len {len(data)}")
+            if len(data) < 6:
+                self._parseUnitStatesClassic(data)
+                self._logger.debug("Parse simple state")
+            elif len(data) % 4 == 0: # (or multiple of 4 bytes per fixture)
+                for i in range(len(data) // 4):
+                    self._logger.debug(f"Parse item {i} [24]")
+                    self._parseUnitStatesClassic(data[:4]) # status update at startup [24]
         else:
             self._logger.debug(f"Unknown network grade {self._networkGrade}")
 
